@@ -3,6 +3,7 @@ import { FileTree, type TreeRoot } from "./FileTree"
 import { createTreeState } from "./store"
 import { createTreeCommands, spawnEditor, promptSession } from "./commands"
 import { createSignal } from "solid-js"
+import { trace, forceActive } from "./trace"
 
 export default Plugin.define({
   id: "filetree",
@@ -20,7 +21,10 @@ export default Plugin.define({
           <FileTree
             state={state}
             context={context}
-            onRoot={(root) => (treeRoot = root)}
+            onRoot={(root) => {
+              treeRoot = root
+              if (forceActive) focusTree()
+            }}
             onActivate={focusTree}
             active={treeActive()}
           />
@@ -30,14 +34,6 @@ export default Plugin.define({
 
     const notify = (message: string, variant: "info" | "error") =>
       context.ui.toast.show({ message, variant })
-
-    /** Layer factories, kept so the debug toast can report what the host enabled. */
-    const layers: { factory: () => { enabled?: unknown } }[] = []
-    const realLayer = context.keymap.layer.bind(context.keymap)
-    context.keymap.layer = ((factory: () => any) => {
-      layers.push({ factory })
-      return realLayer(factory)
-    }) as typeof context.keymap.layer
 
     const commands = createTreeCommands({
       visibleNodes: state.visibleNodes,
@@ -57,23 +53,52 @@ export default Plugin.define({
     /**
      * Whether the tree currently owns the navigation keys.
      *
-     * This is a plain reactive flag rather than renderer focus or a pushed input
-     * mode. Focus was tried and could not be verified from outside the host, and
-     * pushing a mode broke the host's key routing outright. A layer's `enabled`
-     * is reactive and disables only this layer, so the host's own keys are never
-     * taken away and cannot be left dead.
+     * The gate is a reactive flag, but the flag alone is not enough: the host
+     * routes keys to the focused renderable first, and that is the prompt, so
+     * typing went to the chat while the tree showed as active. Focus has to move
+     * to the tree as well, or the prompt keeps swallowing the keys.
      */
-    const [treeActive, setTreeActive] = createSignal(false)
+    const [treeActive, setTreeActive] = createSignal(forceActive)
+
+    type Renderer = {
+      focusRenderable?: (r: unknown) => void
+      currentFocusedRenderable?: unknown
+    }
+    const renderer = context.renderer as unknown as Renderer
+
+    /** Whoever held focus before the tree took it, restored on exit. */
+    let previousFocus: unknown
 
     const focusTree = () => {
+      if (!treeRoot) {
+        trace("focus-skipped", { reason: "no-root" })
+        return
+      }
+      previousFocus = renderer.currentFocusedRenderable
+      renderer.focusRenderable?.(treeRoot)
       setTreeActive(true)
+      trace("focus", {
+        moved: renderer.currentFocusedRenderable === treeRoot,
+        previous: (previousFocus as { constructor?: { name?: string } })?.constructor?.name ?? "none",
+      })
     }
+
     const blurTree = () => {
       setTreeActive(false)
+      // Hand focus back, or the prompt stays unable to receive keys.
+      renderer.focusRenderable?.(previousFocus)
+      previousFocus = undefined
+      trace("blur", { restored: renderer.currentFocusedRenderable === previousFocus })
     }
 
     /** The tree's root renderable, captured for click-to-focus. */
     let treeRoot: TreeRoot | undefined
+
+    trace("setup", {
+      mode: context.keymap.mode.current(),
+      hostFocus: (renderer.currentFocusedRenderable as { constructor?: { name?: string } })
+        ?.constructor?.name ?? "none",
+    })
 
     // Focus the tree. No key is bound: any binding in the host's own mode fires
     // while the user is typing, and readline already owns ctrl+f, ctrl+o and
@@ -113,10 +138,10 @@ export default Plugin.define({
       // while the active banner shows as if it were working.
       priority: 1000,
       commands: [
-        { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => commands.move(-1) },
-        { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => commands.move(1) },
-        { id: "filetree.expand", title: "File tree: expand folder", bind: "right", run: commands.toggle },
-        { id: "filetree.collapse", title: "File tree: collapse folder", bind: "left", run: commands.toggle },
+        { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => { trace("run", { cmd: "up" }); commands.move(-1) } },
+        { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => { trace("run", { cmd: "down" }); commands.move(1) } },
+        { id: "filetree.expand", title: "File tree: expand folder", bind: "right", run: () => { trace("run", { cmd: "expand" }); commands.toggle() } },
+        { id: "filetree.collapse", title: "File tree: collapse folder", bind: "left", run: () => { trace("run", { cmd: "collapse" }); commands.toggle() } },
         {
           id: "filetree.open",
           title: "File tree: open in editor",
@@ -132,7 +157,7 @@ export default Plugin.define({
           bind: "ctrl+o",
           run: () => commands.send(),
         },
-        { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: commands.refresh },
+        { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => { trace("run", { cmd: "refresh" }); commands.refresh() } },
         {
           id: "filetree.exit",
           title: "File tree: exit",
@@ -149,36 +174,44 @@ export default Plugin.define({
     // rather than inferring it from the outside. Set `debug: true` in
     // opencode.json to see it.
     if (context.options?.debug) {
-      const ids = context.keymap
-        .commands()
-        .filter((c) => c.id?.startsWith("filetree."))
-        .map((c) => c.id)
-      const renderer = context.renderer as unknown as {
-        currentFocusedRenderable?: { id?: string; focused?: boolean }
-        focusRenderable?: unknown
-        blurRenderable?: unknown
-      }
       notify(
-        [
-          `ft debug:`,
-          `mode=${context.keymap.mode.current()}`,
-          `root=${treeRoot ? "yes" : "no"}`,
-          `active=${treeActive()}`,
-          `layerEnabled=${String(
-            typeof layers[1]?.factory().enabled === "function"
-              ? (layers[1].factory().enabled as () => unknown)()
-              : "n/a",
-          )}`,
-          `focusApi=${renderer.focusRenderable ? "focusRenderable" : "MISSING"}`,
-          `blurApi=${renderer.blurRenderable ? "blurRenderable" : "MISSING"}`,
-          `hostFocus=${renderer.currentFocusedRenderable?.id ?? "none"}`,
-          `cmds=[${ids.join(" ")}]`,
-        ].join(" "),
+        `ft debug: mode=${context.keymap.mode.current()} root=${
+          treeRoot ? "yes" : "no"
+        } active=${treeActive()} hostFocus=${
+          (renderer.currentFocusedRenderable as { constructor?: { name?: string } })
+            ?.constructor?.name ?? "none"
+        }`,
         "info",
       )
     }
 
+    // Diagnostics: record what the host's keymap actually resolved, which is the
+    // only way to see this from outside the process. Polled because `enabled`
+    // and the active bindings both settle after setup.
+    let lastActive = ""
+    const poll = setInterval(() => {
+      try {
+        const active = context.keymap.active()
+        const snapshot = JSON.stringify(active)
+        if (snapshot === lastActive) return
+        lastActive = snapshot
+        const renderer = context.renderer as unknown as {
+          currentFocusedRenderable?: { constructor?: { name?: string } }
+        }
+        trace("active", {
+          treeActive: treeActive(),
+          mode: context.keymap.mode.current(),
+          hostFocus: renderer.currentFocusedRenderable?.constructor?.name ?? "none",
+          ours: active.filter((k) => k.title?.startsWith("File tree")).length,
+          keys: active.map((k) => `${k.key}=${k.title ?? "?"}${k.continues ? "+" : ""}`),
+        })
+      } catch (error) {
+        trace("active-error", { error: String(error) })
+      }
+    }, 300)
+
     return () => {
+      clearInterval(poll)
       treeRoot = undefined
       unregisterSlot()
     }

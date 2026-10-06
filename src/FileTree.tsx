@@ -9,6 +9,7 @@ import { restorePaths, persistPaths, shouldRestore, restorablePaths } from "./la
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
+import { trace } from "./trace"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
 // stays testable without OpenCode's runtime.
@@ -232,6 +233,22 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     }
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
+
+  // keymap.commands() is documented as reactive, so it must be read inside a
+  // Solid computation. Tracing here is the only place that is true.
+  let tracedReachable = ""
+  createEffect(() => {
+    const reachable = context.keymap.commands().filter((c) => c.id?.startsWith("filetree."))
+    const snapshot = reachable.map((c) => c.id).join(",")
+    if (snapshot === tracedReachable) return
+    tracedReachable = snapshot
+    trace("reachable", {
+      mode: context.keymap.mode.current(),
+      active: props.active === true,
+      count: reachable.length,
+      ids: snapshot,
+    })
+  })
 
   // The tree's root renderable, held so a click can focus it and the plugin
   // entry can scope a keymap layer to it.

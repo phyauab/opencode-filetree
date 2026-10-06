@@ -44,6 +44,9 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     },
     keymap: {
       layer: (factory: AnyFn) => layers.push({ factory }),
+      commands: () => [],
+      active: () => [],
+      shortcuts: () => [],
       mode: {
         current: () => "base",
         push: (mode: string) => {
@@ -184,8 +187,13 @@ describe("plugin entry", () => {
 
   itRender("enables navigation on focus and disables it on exit", async () => {
     const { default: mod } = await load()
-    const { context, allCommands, layers } = createMockContext()
+    const { context, allCommands, layers, slots } = createMockContext()
     await mod.setup(context)
+
+    // Focusing needs the tree's renderable, which the sidebar supplies on render.
+    const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
+    const rootElement = treeElement.type(treeElement.props) as any
+    rootElement.props.ref({ focused: false })
 
     const layer = layers.find((l) =>
       (l.factory().commands ?? []).some((c: any) => c.id === "filetree.up"),
@@ -211,6 +219,7 @@ describe("plugin entry", () => {
     // Render the sidebar, then the tree element, and click it.
     const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
     const rootElement = treeElement.type(treeElement.props) as any
+    rootElement.props.ref({ focused: false })
     expect(layer.factory().enabled?.()).toBe(false)
 
     rootElement.props.onMouseDown()
