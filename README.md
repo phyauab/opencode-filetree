@@ -5,30 +5,58 @@ arrow keys, open files in your editor.
 
 ## Install
 
-Build the plugin, then register it in your `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///C:/path/to/opencode-filetree"]
-}
-```
-
-Build with:
-
 ```
 bun install
 bun run build
 ```
 
-For local development, point the config at the checkout and OpenCode will load
-it directly:
+Then create `~/.config/opencode/plugins/filetree/` containing:
+
+`tui.ts`
+
+```ts
+import { ensureRuntimePluginSupport } from "@opentui/solid/runtime-plugin-support/configure"
+
+ensureRuntimePluginSupport()
+
+const mod = await import("/absolute/path/to/opencode-filetree/dist/tui.js")
+
+export default mod.default
+```
+
+`package.json`
 
 ```json
 {
-  "plugin": ["file:///C:/path/to/opencode-filetree/dist/tui.js"]
+  "name": "filetree-plugin-shim",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@opentui/solid": "0.5.14" }
 }
 ```
+
+Then run `bun install` in that directory and restart OpenCode. `opencode
+plugin list` should show the plugin as `local`.
+
+### Why the shim exists
+
+OpenCode's V2 loader imports external plugins without first initialising OpenTUI
+runtime plugin support, so plugin JSX gets a different `RendererContext` than the
+host's and every element throws `No renderer found`
+([anomalyco/opencode#37836](https://github.com/anomalyco/opencode/issues/37836)).
+`ensureRuntimePluginSupport()` installs the hook that redirects the bundle's
+imports onto the host's runtime.
+
+OpenCode rewrites a fixed list of bare specifiers and
+`@opentui/solid/runtime-plugin-support/configure` is not on it, which is why
+`@opentui/solid` must be installed next to the shim.
+
+### Build details that matter
+
+- The bundle ships **no** copy of `solid-js` or `@opentui/solid`. Duplicates mean
+  separate Solid context objects, which break the same way.
+- Relative imports in `dist/` carry explicit `.js` extensions. Extensionless
+  imports bypass OpenCode's specifier rewrite.
 
 ## Usage
 
