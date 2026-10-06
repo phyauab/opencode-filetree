@@ -9,7 +9,7 @@ import { restorePaths, persistPaths, shouldRestore, restorablePaths } from "./la
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
-import { trace } from "./trace"
+import { toggleExpand } from "./treeLogic"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
 // stays testable without OpenCode's runtime.
@@ -19,17 +19,6 @@ export { computeVisibleNodes }
 /** Milliseconds of filesystem quiet before the tree re-reads. */
 const REFRESH_DEBOUNCE = 250
 
-/**
- * The parts of the tree's root renderable that the plugin entry needs: enough
- * to move focus in and out. Typed structurally so the entry does not depend on
- * a Renderable class it does not own.
- */
-export type TreeRoot = {
-  focus?: () => void
-  blur?: () => void
-  focused?: boolean
-}
-
 type FileTreeProps = {
   state: TreeState
   /**
@@ -38,24 +27,6 @@ type FileTreeProps = {
    * yields a different Solid context object than the host's.
    */
   context: Context
-  /**
-   * Receives the tree's root renderable, so the plugin entry can scope a
-   * keymap layer to it. Navigation keys then apply only while this renderable
-   * has focus, instead of taking over the host's keyboard via a mode.
-   */
-  onRoot?: (root: TreeRoot) => void
-  /**
-   * Called when the tree is clicked, so the plugin entry can hand it the
-   * navigation keys. Clicking is the discoverable way in; the palette command
-   * is the reliable one.
-   */
-  onActivate?: () => void
-  /**
-   * True while the tree holds the navigation keys. Rendered as a hint so the
-   * state is visible: the selection highlight alone looks identical whether or
-   * not the keys are live, which made this impossible to diagnose by looking.
-   */
-  active?: boolean
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
@@ -190,13 +161,9 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   // The tree can shrink under the cursor (collapse, or deleted files).
   createEffect(() => {
-    const length = state.visibleNodes().length
-    const cursor = state.cursor()
+    state.visibleNodes().length
+    state.cursor()
     state.clampCursor()
-    // Solid delivers the signal to this effect, but the renderer was not
-    // painting the updated rows. Ask for a frame explicitly.
-    ;(context.renderer as unknown as { requestRender?: () => void }).requestRender?.()
-    trace("clamp", { length, cursor, after: state.cursor() })
   })
 
   // The window is sized from the renderer on the plugin context, since the
@@ -243,43 +210,25 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
 
-  // keymap.commands() is documented as reactive, so it must be read inside a
-  // Solid computation. Tracing here is the only place that is true.
-  let tracedReachable = ""
-  createEffect(() => {
-    const reachable = context.keymap.commands().filter((c) => c.id?.startsWith("filetree."))
-    const snapshot = reachable.map((c) => c.id).join(",")
-    if (snapshot === tracedReachable) return
-    tracedReachable = snapshot
-    trace("reachable", {
-      mode: context.keymap.mode.current(),
-      active: props.active === true,
-      count: reachable.length,
-      ids: snapshot,
-    })
-  })
-
-  // The tree's root renderable, held so a click can focus it and the plugin
-  // entry can scope a keymap layer to it.
-  let rootRef: TreeRoot | undefined
+  /**
+   * Handles a click on a row: select it, and expand or collapse a folder.
+   *
+   * Mouse input is the whole interaction. Keyboard navigation was removed after
+   * the host proved not to repaint plugin rows in response to keymap commands:
+   * the state updated correctly (verified in the trace) but nothing was painted.
+   * A mouse event makes the host render a frame, so clicks are reliable.
+   */
+  const onRowClick = (node: (typeof state.visibleNodes extends () => infer R ? R : never)[number]) => {
+    const index = state.visibleNodes().indexOf(node)
+    if (index >= 0) state.setCursor(index)
+    if (node.entry.isDirectory) {
+      state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
+    }
+    state.clampCursor()
+  }
 
   return (
-    <box
-      // The tree is the click target that hands it the navigation keys.
-      focusable
-      // Clicking the tree focuses it, which is what makes the scoped keymap
-      // layer reachable. No mode is pushed, so the host keeps its own keys.
-      // Focus goes through the renderer, which is what tracks the focused
-      // renderable and routes keys to it.
-      onMouseDown={() => props.onActivate?.()}
-      ref={(root: TreeRoot) => {
-        rootRef = root
-        props.onRoot?.(root)
-      }}
-    >
-      <Show when={props.active}>
-        <text fg="yellow">[tree active — esc to exit]</text>
-      </Show>
+    <box>
       <Show
         when={rows().total > 0}
         fallback={
@@ -293,14 +242,16 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           </text>
         }
       >
-        {rows().slice.map(({ node, index, selected }) => (
-          <TreeNode
-            entry={node.entry}
-            depth={node.depth}
-            isSelected={selected}
-            isExpanded={state.expanded().has(node.entry.path)}
-            gitStatus={state.gitStatusMap().get(node.entry.path)}
-          />
+        {rows().slice.map(({ node, selected }) => (
+          <box onMouseDown={() => onRowClick(node)}>
+            <TreeNode
+              entry={node.entry}
+              depth={node.depth}
+              isSelected={selected}
+              isExpanded={state.expanded().has(node.entry.path)}
+              gitStatus={state.gitStatusMap().get(node.entry.path)}
+            />
+          </box>
         ))}
         <Show when={rows().view.start > 0}>
           <text fg="dim"> {rows().view.start} more above</text>

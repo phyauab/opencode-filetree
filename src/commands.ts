@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process"
 import type { DirEntry } from "./fileSystem"
-import { trace } from "./trace"
 import { moveCursor, toggleExpand, type VisibleNode } from "./treeLogic"
 
 export type EditorResult = { ok: true } | { ok: false; error: string }
@@ -79,12 +78,6 @@ export type TreeCommandsDeps = {
   setCursor: (fn: (c: number) => number) => void
   setExpanded: (fn: (prev: Set<string>) => Set<string>) => void
   clampCursor: () => void
-  /**
-   * Requests a repaint. Solid propagates the signal to effects (the clamp effect
-   * observed every cursor change) but the renderer never painted the new rows,
-   * so the tree only refreshed when something else forced a frame.
-   */
-  repaint?: () => void
   reload: () => void
   sendToSession: (entry: DirEntry) => void
   openInEditor: (entry: DirEntry) => Promise<EditorResult>
@@ -100,23 +93,13 @@ export type TreeCommands = {
 
 /** Builds the pure command handlers the keymap binds to. */
 export function createTreeCommands(deps: TreeCommandsDeps): TreeCommands {
-  const move = (delta: number) => {
-    const length = deps.visibleNodes().length
-    deps.setCursor((c) => moveCursor(c, delta, length))
-    deps.repaint?.()
-    trace("move", {
-      delta,
-      length,
-      before: deps.currentEntry()?.name,
-      after: deps.currentEntry()?.name,
-    })
-  }
+  const move = (delta: number) =>
+    deps.setCursor((c) => moveCursor(c, delta, deps.visibleNodes().length))
 
   const toggle = () => {
     const entry = deps.currentEntry()
     if (entry?.isDirectory) deps.setExpanded((prev) => toggleExpand(entry.path, prev))
     deps.clampCursor()
-    deps.repaint?.()
   }
 
   const open = (): Promise<EditorResult | undefined> => {

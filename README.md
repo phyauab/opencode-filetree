@@ -60,45 +60,39 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Open the command palette with `ctrl+p` and pick **File tree: focus** (it is in
-the "File tree" group), or just click inside the tree. While active, the tree
-shows `[tree active — esc to exit]` at the top so you can see that the keys are
-live.
+The tree is always visible in the sidebar. It is driven by the mouse:
 
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` | Move selection |
-| `→` | Expand folder |
-| `←` | Collapse folder |
-| `enter` | Open file in `$EDITOR` |
-| `ctrl+o` | Send the file path to the current session |
-| `r` | Refresh the tree |
-| `esc` | Return focus to the prompt |
+| Action | How |
+|--------|-----|
+| Select a row | Click it |
+| Expand / collapse a folder | Click it |
 
-The tree is always visible in the sidebar; only keyboard focus moves.
+The selected row is marked with `›`.
 
-### No default keybinding
+The tree also re-reads itself when files change on disk.
 
-The plugin binds no keys in your prompt's input mode, on purpose. Anything
-registered there fires while you are typing, and readline already owns `ctrl+f`,
-`ctrl+o` and `ctrl+t`. The focus command is palette-only by default.
+## No keyboard bindings
 
-Navigation is gated with the layer's `enabled` flag, not applied globally and
-not applied by pushing an input mode. Pushing a mode takes over the host's key
-routing — an earlier version did this, and afterwards no key reached anything
-until the user clicked the UI. Renderer focus was tried next and could not be
-verified from outside the host, so the gate is a plain reactive flag: it can
-only ever disable this plugin's own layer.
+The plugin registers **no** keys at all, on purpose.
 
-To give it a key, add to `~/.config/opencode/tui.json` and pick something
-readline does not use:
+Keyboard navigation was implemented and removed. The keys arrived correctly and
+the tree's state updated correctly — a diagnostic log showed the cursor moving
+from index 0 to 1 and the clamp effect re-running on every change — but OpenCode
+2.0.24 never repainted the updated rows. Nothing about the tree's logic was at
+fault; the host does not repaint plugin components in response to keymap
+commands in this build.
 
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "keybinds": { "filetree.enter-mode": "f5" }
-}
-```
+Two earlier approaches made things worse and are recorded in the git history:
+
+- **Pushing an input mode** (`keymap.mode.push`) took over the host's key
+  routing entirely. Afterwards no key reached anything, and only clicking the UI
+  recovered.
+- **Moving renderer focus** to the tree delivered the keys but left the prompt
+  without its cursor, with a delay before typing worked again.
+
+A mouse event makes the host render a frame, so clicks are reliable where
+keymap commands were not. Registering no keymap layer also means the plugin
+cannot interfere with typing or with any key you use.
 
 ## Files with git changes
 
