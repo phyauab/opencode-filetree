@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, createSignal, For, Show, type Component } from "solid-js"
+import { createEffect, onCleanup, createSignal, untrack, For, Show, type Component } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
 import { readDir, watch, isGitRepo, getGitStatus } from "./fileSystem"
 import { computeVisibleNodes } from "./treeLogic"
@@ -52,7 +52,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   // Durable layout: which folders were open, per project root.
   const [expandedLayout, setExpandedLayout] = context.storage.memory(
-    layoutKey(resolveDirectory(context) ?? ""),
+    layoutKey(untrack(() => resolveDirectory(context)) ?? ""),
     { initial: { expanded: [] as string[] } },
   )
 
@@ -76,13 +76,17 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   // Read the project root and watch it for changes.
   createEffect(() => {
-    const dir = resolveDirectory(context)
+    reloadToken()
+
+    // Read the directory untracked. `context.data` is a live store that
+    // publishes on every session event, so subscribing to it re-runs this
+    // effect constantly and the tree never leaves its loading state.
+    const dir = untrack(() => resolveDirectory(context))
     if (!dir) {
       setEmpty({ kind: "no-location" })
       return
     }
 
-    reloadToken()
     setEmpty({ kind: "loading" })
 
     const reloadEntries = () => {
@@ -143,11 +147,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   })
 
   // The window is sized from the renderer on the plugin context, since the
-  // sidebar slot reports no dimensions of its own. Reading the renderer
-  // directly avoids `useTerminalDimensions`, which resolves a Solid context
-  // from this package's own copy of @opentui/solid rather than the host's.
+  // sidebar slot reports no dimensions of its own. Read untracked for the same
+  // reason as the directory: the host's stores are live, and subscribing would
+  // re-run the effect on every session event.
   const [terminalHeight, setTerminalHeight] = createSignal(
-    context.renderer?.height ?? DEFAULT_TERMINAL_HEIGHT,
+    untrack(() => context.renderer?.height) ?? DEFAULT_TERMINAL_HEIGHT,
   )
 
   createEffect(() => {
