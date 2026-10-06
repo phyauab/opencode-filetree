@@ -48,18 +48,41 @@ The tree is always visible in the sidebar; only the keyboard focus moves.
 
 ## Files with git changes
 
-Modified, added, and untracked files are marked `[M]`, `[A]`, and `[?]`. Git
-status is read with `git status --porcelain` and is skipped outside a git
-repository.
+Modified, added, deleted, and untracked files are marked `[M]`, `[A]`, `[D]`, and
+`[?]`, with the status spelled out alongside. Git status is read with
+`git status --porcelain -z` and is skipped outside a git repository.
+
+Directories the tree skips by default: `node_modules`, `.git`, `dist`, `build`,
+`out`, `.next`, `.turbo`, `.cache`, `__pycache__`, `.venv`, and any
+dot-directory. Dotfiles like `.gitignore` and `.env` stay visible.
+
+## When something goes wrong
+
+A directory that cannot be read — no permission, or deleted while open — shows
+its reason inline instead of taking down the TUI. If `$EDITOR` cannot be
+spawned, or a file cannot be sent to the session, you get an error toast rather
+than a crash.
 
 ## Development
 
 ```
-bun test          # 51 tests
+bun test          # 112 tests
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```
 
-`src/commands.ts` holds the keymap behaviour and is tested without a TUI;
-`src/tui.tsx` is the thin OpenCode plugin entry that wires those commands to
-keybinds.
+`src/commands.ts` and `src/loader.ts` hold the behaviour and are tested without
+a TUI; `src/tui.tsx` is the thin OpenCode plugin entry that wires those
+commands to keybinds.
+
+| File | Role |
+|------|------|
+| `src/tui.tsx` | Plugin entry: sidebar slot, keymap layers, input mode |
+| `src/FileTree.tsx` | Tree component and pure traversal logic |
+| `src/commands.ts` | Keymap behaviour, editor spawn, session prompt |
+| `src/store.ts` | Reactive tree state and cursor clamping |
+| `src/loader.ts` | Directory loading that never rejects |
+| `src/fileSystem.ts` | `readDir`, `watch`, git status parsing |
+| `src/fileTreeData.ts` | Hidden-entry filtering, error messages |
+| `src/icons.ts` | Icons, git status labels, hidden-directory rules |
+| `src/TreeNode.tsx` | One row of the tree |
