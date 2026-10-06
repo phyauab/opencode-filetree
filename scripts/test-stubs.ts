@@ -44,6 +44,31 @@ mock.module("solid-js", () => ({
   For: () => null,
   Show: () => null,
   ErrorBoundary: (props: { children?: unknown }) => props.children ?? null,
+  // JSX compiles to createComponent/mergeProps. The elements are never rendered
+  // in these tests; they only need to exist.
+  createComponent: (comp: unknown, props: Record<string, unknown>) => ({ comp, props }),
+  createElement: (comp: unknown, props: Record<string, unknown>) => ({ comp, props }),
+  // A context whose read returns the default rather than throwing, so importing
+  // a component that declares one does not need a provider.
+  createContext: <T,>(defaultValue: T) => {
+    const read = () => defaultValue
+    read.provider = (props: { value: T; children?: unknown }) => props.children ?? null
+    return read
+  },
+  useContext: <T,>(context: { (): T }) => context(),
+}))
+
+/**
+ * A JSX runtime that builds a plain description of the tree instead of calling
+ * OpenTUI. Registration tests need `setup()` to run, and the components are
+ * never rendered, so the elements only have to exist and be inspectable.
+ */
+mock.module("@opentui/solid/jsx-dev-runtime", () => ({
+  jsx: (type: unknown, props: Record<string, unknown>) => ({ type, props }),
+  jsxs: (type: unknown, props: Record<string, unknown>) => ({ type, props }),
+  jsxDEV: (type: unknown, props: Record<string, unknown>) => ({ type, props }),
+  Fragment: (props: Record<string, unknown>) => props,
+  createComponent: (comp: unknown, props: Record<string, unknown>) => ({ comp, props }),
 }))
 
 /** Runs and clears the callbacks `onCleanup` collected during a test. */

@@ -41,8 +41,44 @@ export default Plugin.define({
       },
     })
 
+    /** Pop handle returned when tree mode was pushed; escape calls it. */
+    let popTreeMode: (() => void) | undefined
+
+    const enterTreeMode = () => {
+      popTreeMode?.()
+      popTreeMode = context.keymap.mode.push(TREE_MODE)
+    }
+
+    const exitTreeMode = () => {
+      popTreeMode?.()
+      popTreeMode = undefined
+    }
+
+    // Nothing is bound in the host's input mode. Every key registered there fires
+    // while the user is typing, and readline already owns ctrl+f, ctrl+o and
+    // ctrl+t, so any default binding interferes with the prompt. The focus
+    // command is reachable from the command palette, and a key can be bound to
+    // it in tui.json under "keybinds" if the user wants one.
+    //
+    // This layer registers before the tree layer on purpose. `keymap.layer`
+    // throws synchronously on a command-shape error, and the throw aborts setup,
+    // so anything registered later would never exist. A duplicate command id
+    // once did exactly that: the tree rendered with no working keys at all.
+    context.keymap.layer(() => ({
+      commands: [
+        {
+          id: "filetree.enter-mode",
+          title: "File tree: focus",
+          group: "File tree",
+          palette: true,
+          run: enterTreeMode,
+        },
+      ],
+    }))
+
     // Tree navigation owns the keyboard only while the TUI is in tree mode, so
-    // arrow keys and enter keep working in the prompt.
+    // arrow keys and enter keep working in the prompt. Command ids must be
+    // unique within a layer.
     context.keymap.layer(() => ({
       mode: TREE_MODE,
       priority: 10,
@@ -66,45 +102,8 @@ export default Plugin.define({
           bind: "ctrl+o",
           run: () => commands.send(),
         },
-        {
-          id: "filetree.send",
-          title: "File tree: send to session",
-          bind: "ctrl+o",
-          run: () => commands.send(),
-        },
         { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: commands.refresh },
         { id: "filetree.exit", title: "File tree: exit", bind: "escape", run: () => exitTreeMode() },
-      ],
-    }))
-
-    // Entering tree mode is the only binding active in the host's own input mode.
-    /** Pop handle returned when tree mode was pushed; escape calls it. */
-    let popTreeMode: (() => void) | undefined
-
-    const enterTreeMode = () => {
-      popTreeMode?.()
-      popTreeMode = context.keymap.mode.push(TREE_MODE)
-    }
-
-    const exitTreeMode = () => {
-      popTreeMode?.()
-      popTreeMode = undefined
-    }
-
-    // Nothing is bound in the host's input mode. Every key registered there fires
-    // while the user is typing, and readline already owns ctrl+f, ctrl+o and
-    // ctrl+t, so any default binding interferes with the prompt. The focus
-    // command is reachable from the command palette, and a key can be bound to
-    // it in tui.json under "keybinds" if the user wants one.
-    context.keymap.layer(() => ({
-      commands: [
-        {
-          id: "filetree.enter-mode",
-          title: "File tree: focus",
-          group: "File tree",
-          palette: true,
-          run: enterTreeMode,
-        },
       ],
     }))
 

@@ -2,19 +2,11 @@ import { describe, it, expect } from "bun:test"
 
 type AnyFn = (...args: any[]) => any
 
-// Rendering the plugin's JSX needs OpenCode's copy of @opentui/solid, which is
-// deliberately not installed here (see scripts/verify-no-local-opentui.test.ts).
-// Without it these checks cannot run, so they are skipped rather than failing.
-const canRenderJsx = await (async () => {
-  try {
-    await import("@opentui/solid/jsx-dev-runtime")
-    return true
-  } catch {
-    return false
-  }
-})()
-
-const itRender = canRenderJsx ? it : it.skip
+// These checks call setup() but never render a component, so the stubbed JSX
+// runtime is enough. They used to be skipped, which is how a duplicate command
+// id shipped: a shape error in one layer threw before the next layer was
+// registered, and no test was watching for it.
+const itRender = it
 
 /** Captures what the plugin registers, and lets a test make calls fail. */
 function createMockContext(options: { promptFails?: boolean } = {}) {
@@ -140,6 +132,30 @@ describe("plugin entry", () => {
       expect(command.bind).toBeUndefined()
       expect(command.slash).toBeUndefined()
     }
+  })
+
+  itRender("never registers the same command id twice in one layer", async () => {
+    const { default: mod } = await load()
+    const { context, layers } = createMockContext()
+    await mod.setup(context)
+
+    // keymap.layer throws synchronously on a duplicate id, aborting setup before
+    // later layers register. The tree would still render, with no working keys.
+    for (const { factory } of layers) {
+      const ids = (factory().commands ?? []).map((c: any) => c.id).filter(Boolean)
+      expect(new Set(ids).size).toBe(ids.length)
+    }
+  })
+
+  itRender("registers the focus command before the tree layer", async () => {
+    const { default: mod } = await load()
+    const { context, layers } = createMockContext()
+    await mod.setup(context)
+
+    // The focus command must exist even if the tree layer fails to register,
+    // otherwise there is no way back into the tree.
+    const first = (layers[0].factory().commands ?? []).map((c: any) => c.id)
+    expect(first).toContain("filetree.enter-mode")
   })
 
   itRender("pushes tree mode on focus and pops it on exit", async () => {

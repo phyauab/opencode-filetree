@@ -60,8 +60,8 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Open the command palette with `ctrl+p`, pick **File tree: focus**, and the tree
-takes keyboard focus. While focused:
+Open the command palette with `ctrl+p` and pick **File tree: focus** (it is in
+the "File tree" group). The tree then takes keyboard focus. While focused:
 
 | Key | Action |
 |-----|--------|
