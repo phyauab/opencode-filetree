@@ -108,6 +108,10 @@ export default Plugin.define({
     context.keymap.layer(() => ({
       mode: "global",
       enabled: treeActive,
+      // Outrank the host's prompt layer. Without this the layer is enabled but
+      // loses dispatch: the keys reach the prompt and the tree never sees them,
+      // while the active banner shows as if it were working.
+      priority: 1000,
       commands: [
         { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => commands.move(-1) },
         { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => commands.move(1) },

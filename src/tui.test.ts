@@ -248,6 +248,10 @@ describe("plugin entry", () => {
     expect(nav?.factory().mode).toBe("global")
     expect(nav?.factory().target).toBeUndefined()
     expect(typeof nav?.factory().enabled).toBe("function")
+
+    // An enabled layer that loses dispatch to the prompt shows as active but
+    // does nothing, which is exactly the failure this guards against.
+    expect(nav?.factory().priority).toBeGreaterThan(0)
   })
 
   itRender("navigating an empty tree does not throw", async () => {
