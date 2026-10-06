@@ -60,8 +60,8 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Press `ctrl+t`, type `/files`, or pick "File tree: focus" from the command
-palette (`ctrl+p`) to give the tree keyboard focus. While focused:
+Open the command palette with `ctrl+p`, pick **File tree: focus**, and the tree
+takes keyboard focus. While focused:
 
 | Key | Action |
 |-----|--------|
@@ -75,16 +75,20 @@ palette (`ctrl+p`) to give the tree keyboard focus. While focused:
 
 The tree is always visible in the sidebar; only keyboard focus moves.
 
-Navigation keys are scoped to this mode rather than bound globally, so the
-arrows keep working in the prompt.
+### No default keybinding
 
-`ctrl+f` is deliberately not used: the prompt binds it to "move forward one
-character", so the tree never sees it. To use a different key, add to
-`~/.config/opencode/tui.json`:
+The plugin binds no keys in your prompt's input mode, on purpose. Anything
+registered there fires while you are typing, and readline already owns `ctrl+f`,
+`ctrl+o` and `ctrl+t` — an earlier version bound those and broke the prompt.
+The focus command is palette-only by default.
+
+To give it a key, add to `~/.config/opencode/tui.json` and pick something
+readline does not use:
 
 ```json
 {
-  "keybinds": { "filetree.enter-mode": "ctrl+g" }
+  "$schema": "https://opencode.ai/tui.json",
+  "keybinds": { "filetree.enter-mode": "f5" }
 }
 ```
 

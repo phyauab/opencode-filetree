@@ -66,6 +66,12 @@ export default Plugin.define({
           bind: "ctrl+o",
           run: () => commands.send(),
         },
+        {
+          id: "filetree.send",
+          title: "File tree: send to session",
+          bind: "ctrl+o",
+          run: () => commands.send(),
+        },
         { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: commands.refresh },
         { id: "filetree.exit", title: "File tree: exit", bind: "escape", run: () => exitTreeMode() },
       ],
@@ -85,27 +91,19 @@ export default Plugin.define({
       popTreeMode = undefined
     }
 
-    // Entering tree mode is the only binding active in the host's own input
-    // mode. `ctrl+f` is not used: the prompt binds it to "move forward one
-    // character", so the tree would never receive it. Rebind in tui.json under
-    // "keybinds" if ctrl+t clashes with something else.
+    // Nothing is bound in the host's input mode. Every key registered there fires
+    // while the user is typing, and readline already owns ctrl+f, ctrl+o and
+    // ctrl+t, so any default binding interferes with the prompt. The focus
+    // command is reachable from the command palette, and a key can be bound to
+    // it in tui.json under "keybinds" if the user wants one.
     context.keymap.layer(() => ({
       commands: [
         {
           id: "filetree.enter-mode",
           title: "File tree: focus",
           group: "File tree",
-          bind: "ctrl+t",
           palette: true,
-          slash: { name: "files", aliases: ["ft"] },
-          suggested: true,
           run: enterTreeMode,
-        },
-        {
-          id: "filetree.send",
-          title: "File tree: send to session",
-          bind: "ctrl+o",
-          run: () => commands.send(),
         },
       ],
     }))

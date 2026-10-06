@@ -127,6 +127,21 @@ describe("plugin entry", () => {
     expect(hostBinds).not.toContain("enter")
   })
 
+  itRender("binds no keys in the host's input mode", async () => {
+    const { default: mod } = await load()
+    const { context, allCommands } = createMockContext()
+    await mod.setup(context)
+
+    // Every key registered outside tree mode fires while the user is typing.
+    // readline owns ctrl+f, ctrl+o and ctrl+t, so any of those would break the
+    // prompt. The focus command must stay palette-only.
+    const inHostMode = allCommands().filter((c: any) => c.mode !== "filetree")
+    for (const command of inHostMode) {
+      expect(command.bind).toBeUndefined()
+      expect(command.slash).toBeUndefined()
+    }
+  })
+
   itRender("pushes tree mode on focus and pops it on exit", async () => {
     const { default: mod } = await load()
     const { context, allCommands, pushed } = createMockContext()
