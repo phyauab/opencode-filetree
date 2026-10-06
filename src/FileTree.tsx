@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, createSignal, untrack, For, Show, type Component } from "solid-js"
+import { createEffect, onCleanup, createSignal, untrack, Show, type Component } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
 import { readDirSync, watch, getGitStatusSync } from "./fileSystem"
 import { computeVisibleNodes } from "./treeLogic"
@@ -227,13 +227,18 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   // Rows are windowed to the panel height, so a tree with thousands of entries
   // costs the same per frame as one with a dozen.
+  //
+  // cursor is read here so this memo tracks it. <For> builds its own per-item
+  // memos, and in this host those did not repaint when the cursor moved: state
+  // updated and the surrounding Show did repaint, but the rows did not.
   const rows = () => {
+    const cursor = state.cursor()
     const nodes = state.visibleNodes()
     const view = state.viewport()
     const failures = state.failures()
-    const slice: { node: (typeof nodes)[number]; index: number }[] = []
+    const slice: { node: (typeof nodes)[number]; index: number; selected: boolean }[] = []
     for (let i = view.start; i < Math.min(view.end, nodes.length); i++) {
-      slice.push({ node: nodes[i], index: i })
+      slice.push({ node: nodes[i], index: i, selected: i === cursor })
     }
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
@@ -288,26 +293,15 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           </text>
         }
       >
-        <For each={rows().slice}>
-          {({ node, index }) => (
-            <>
-              <TreeNode
-                entry={node.entry}
-                depth={node.depth}
-                isSelected={index === state.cursor()}
-                isExpanded={state.expanded().has(node.entry.path)}
-                gitStatus={state.gitStatusMap().get(node.entry.path)}
-              />
-              <Show when={rows().failures.get(node.entry.path)}>
-                {(reason) => (
-                  <text fg="yellow">
-                    {"  ".repeat(node.depth + 1)}- {reason()}
-                  </text>
-                )}
-              </Show>
-            </>
-          )}
-        </For>
+        {rows().slice.map(({ node, index, selected }) => (
+          <TreeNode
+            entry={node.entry}
+            depth={node.depth}
+            isSelected={selected}
+            isExpanded={state.expanded().has(node.entry.path)}
+            gitStatus={state.gitStatusMap().get(node.entry.path)}
+          />
+        ))}
         <Show when={rows().view.start > 0}>
           <text fg="dim"> {rows().view.start} more above</text>
         </Show>
