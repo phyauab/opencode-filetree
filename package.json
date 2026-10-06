@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/tui.tsx",
-    "./tui": "./src/tui.tsx"
+    ".": "./dist/tui.js",
+    "./tui": "./dist/tui.js"
   },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@opencode/plugin": "latest"
   },
@@ -18,5 +21,10 @@
     "@types/bun": "^1.4.2",
     "@types/node": "^26.6.4",
     "typescript": "latest"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   }
 }

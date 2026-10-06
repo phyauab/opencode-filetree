@@ -1,120 +1,94 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { FileTree, moveCursor, toggleExpand } from "./FileTree"
+import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
-import { spawn } from "node:child_process"
+import { createTreeCommands, spawnEditor } from "./commands"
 import { createSignal } from "solid-js"
 import type { DirEntry } from "./fileSystem"
+
+/** Input mode the TUI switches into while the file tree owns the keyboard. */
+const TREE_MODE = "filetree"
 
 export default Plugin.define({
   id: "filetree",
   setup(context) {
     const state = createTreeState()
-    const [sessionID, setSessionID] = createSignal<string>("")
+    const [sessionID, setSessionID] = createSignal("")
 
-    // Register sidebar slot
-    context.ui.slot({
+    const unregisterSlot = context.ui.slot({
       append: "sidebar.content",
-      render: ({ sessionID: sid }) => {
-        if (sid) setSessionID(sid)
+      render: (input) => {
+        if (input.sessionID) setSessionID(input.sessionID)
         return <FileTree state={state} />
       },
     })
 
-    // Helper: get the entry at the current cursor position
-    const getSelectedEntry = () => {
-      const nodes = state.visibleNodes()
-      const idx = state.cursor()
-      return idx >= 0 && idx < nodes.length ? nodes[idx].entry : undefined
+    const commands = createTreeCommands({
+      visibleNodes: state.visibleNodes,
+      currentEntry: state.currentEntry,
+      setCursor: state.setCursor,
+      setExpanded: state.setExpanded,
+      reset: () => {
+        state.setEntries([])
+        state.setExpanded(new Set<string>())
+        state.setChildrenMap(new Map<string, DirEntry[]>())
+        state.setCursor(0)
+      },
+      sendToSession: (entry) => {
+        const id = sessionID()
+        if (!id) return
+        context.client.session.prompt({ sessionID: id, text: `Read ${entry.path}` })
+      },
+      openInEditor: spawnEditor,
+    })
+
+    /** Pop handle returned when tree mode was pushed; escape calls it. */
+    let popTreeMode: (() => void) | undefined
+
+    const enterTreeMode = () => {
+      popTreeMode?.()
+      popTreeMode = context.keymap.mode.push(TREE_MODE)
     }
 
-    // Register keymap for navigation
+    /** Leaves tree mode and hands the keyboard back to the host. */
+    const exitTreeMode = () => {
+      popTreeMode?.()
+      popTreeMode = undefined
+    }
+
+    // Tree navigation owns the keyboard only while the TUI is in tree mode, so
+    // arrow keys and enter keep working in the prompt.
     context.keymap.layer(() => ({
-      mode: "global",
+      mode: TREE_MODE,
+      priority: 10,
+      commands: [
+        { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => commands.move(-1) },
+        { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => commands.move(1) },
+        { id: "filetree.expand", title: "File tree: expand folder", bind: "right", run: commands.toggle },
+        { id: "filetree.collapse", title: "File tree: collapse folder", bind: "left", run: commands.toggle },
+        { id: "filetree.open", title: "File tree: open in editor", bind: "enter", run: commands.open },
+        { id: "filetree.send", title: "File tree: send to session", bind: "ctrl+o", run: commands.send },
+        { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: commands.refresh },
+        { id: "filetree.exit", title: "File tree: exit", bind: "escape", run: exitTreeMode },
+      ],
+    }))
+
+    // Entering tree mode is the only binding active in the host's own input mode.
+    context.keymap.layer(() => ({
       commands: [
         {
-          id: "filetree.up",
-          title: "Move up",
-          bind: "up",
-          run: () => {
-            state.setCursor((c) => moveCursor(c, -1, state.visibleNodes().length))
-          },
-        },
-        {
-          id: "filetree.down",
-          title: "Move down",
-          bind: "down",
-          run: () => {
-            state.setCursor((c) => moveCursor(c, 1, state.visibleNodes().length))
-          },
-        },
-        {
-          id: "filetree.expand",
-          title: "Expand folder",
-          bind: "right",
-          run: () => {
-            const entry = getSelectedEntry()
-            if (entry?.isDirectory) {
-              state.setExpanded((prev) => toggleExpand(entry.path, prev))
-            }
-          },
-        },
-        {
-          id: "filetree.collapse",
-          title: "Collapse folder",
-          bind: "left",
-          run: () => {
-            const entry = getSelectedEntry()
-            if (entry?.isDirectory) {
-              state.setExpanded((prev) => toggleExpand(entry.path, prev))
-            }
-          },
-        },
-        {
-          id: "filetree.open",
-          title: "Open file in editor",
-          bind: "enter",
-          run: () => {
-            const entry = getSelectedEntry()
-            if (entry && !entry.isDirectory) {
-              const editor = process.env.EDITOR || "code"
-              spawn(editor, [entry.path], { detached: true, stdio: "ignore" }).unref()
-            } else if (entry?.isDirectory) {
-              state.setExpanded((prev) => toggleExpand(entry.path, prev))
-            }
-          },
-        },
-        {
-          id: "filetree.send-to-session",
-          title: "Send file to session",
-          bind: "ctrl+o",
-          run: () => {
-            const entry = getSelectedEntry()
-            if (entry && sessionID()) {
-              context.client.session.prompt({
-                sessionID: sessionID(),
-                text: `Read ${entry.path}`,
-              })
-            }
-          },
-        },
-        {
-          id: "filetree.refresh",
-          title: "Refresh tree",
-          bind: "r",
-          run: () => {
-            const dir = context.location?.directory
-            if (dir) {
-              state.setEntries([])
-              state.setExpanded(new Set<string>())
-              state.setChildrenMap(new Map<string, DirEntry[]>())
-            }
-          },
+          id: "filetree.enter-mode",
+          title: "File tree: focus",
+          group: "File tree",
+          bind: "ctrl+f",
+          palette: true,
+          suggested: true,
+          run: enterTreeMode,
         },
       ],
     }))
 
     return () => {
-      // Cleanup
+      unregisterSlot()
     }
   },
 })

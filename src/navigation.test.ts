@@ -35,7 +35,7 @@ describe("createTreeState", () => {
       new Map([["/proj/src", [{ name: "app.ts", path: "/proj/src/app.ts", isDirectory: false }]]]),
     )
 
-    state.setExpanded(new Set())
+    state.setExpanded(new Set<string>())
     expect(state.visibleNodes()).toHaveLength(1)
 
     state.setExpanded(new Set(["/proj/src"]))
