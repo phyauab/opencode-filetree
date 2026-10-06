@@ -1,6 +1,6 @@
 import { createSignal, type Setter } from "solid-js"
 import type { DirEntry } from "./fileSystem"
-import { computeVisibleNodes, type VisibleNode } from "./FileTree"
+import { computeVisibleNodes, type VisibleNode } from "./treeLogic"
 import type { ChildrenMap, FailuresMap } from "./loader"
 import { computeViewport, viewportHeight, type Viewport } from "./viewport"
 

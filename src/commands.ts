@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import type { DirEntry } from "./fileSystem"
-import { moveCursor, toggleExpand, type VisibleNode } from "./FileTree"
+import { moveCursor, toggleExpand, type VisibleNode } from "./treeLogic"
 
 export type EditorResult = { ok: true } | { ok: false; error: string }
 

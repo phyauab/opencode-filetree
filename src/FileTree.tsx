@@ -1,65 +1,25 @@
 import { createEffect, onCleanup, createSignal, For, Show, type Component } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
-import { readDir, watch, isGitRepo, getGitStatus, type DirEntry } from "./fileSystem"
+import { readDir, watch, isGitRepo, getGitStatus } from "./fileSystem"
+import { computeVisibleNodes } from "./treeLogic"
 import { loadDir, applyResult } from "./loader"
+import { heightForTerminal, DEFAULT_TERMINAL_HEIGHT } from "./viewport"
 import { layoutKey } from "./persist"
 import { restorePaths, persistPaths, shouldRestore, isRestorable } from "./layoutSync"
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 
-// --- Pure navigation logic (exported for testing) ---
+// Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
+// stays testable without OpenCode's runtime.
 
-export type VisibleNode = {
-  entry: DirEntry
-  depth: number
-}
-
-export function computeVisibleNodes(
-  rootEntries: DirEntry[],
-  expanded: Set<string>,
-  childrenMap?: Map<string, DirEntry[]>,
-  depth: number = 0,
-  result: VisibleNode[] = [],
-): VisibleNode[] {
-  for (const entry of rootEntries) {
-    result.push({ entry, depth })
-    if (entry.isDirectory && expanded.has(entry.path) && childrenMap?.has(entry.path)) {
-      computeVisibleNodes(childrenMap.get(entry.path)!, expanded, childrenMap, depth + 1, result)
-    }
-  }
-  return result
-}
-
-export function moveCursor(current: number, delta: number, max: number): number {
-  return Math.max(0, Math.min(max - 1, current + delta))
-}
-
-export function toggleExpand(path: string, expanded: Set<string>): Set<string> {
-  const next = new Set(expanded)
-  if (next.has(path)) next.delete(path)
-  else next.add(path)
-  return next
-}
+export { computeVisibleNodes }
 
 // --- Component ---
 
 /** Milliseconds of filesystem quiet before the tree re-reads. */
 const REFRESH_DEBOUNCE = 250
 
-/** Rows reserved for the sidebar's own content, prompts, and the tree's hints. */
-const SIDEBAR_CHROME_ROWS = 14
-
-/** Fraction of the free terminal height the tree may use. */
-const SIDEBAR_HEIGHT_SHARE = 0.6
-
-/** Used when the renderer reports no height. */
-const DEFAULT_TERMINAL_HEIGHT = 40
-
-/** Rows the tree renders for a given available height. */
-export function viewportHeightFor(availableHeight: number, share: number): number {
-  if (!Number.isFinite(availableHeight) || !Number.isFinite(share)) return 1
-  return Math.max(1, Math.floor(Math.max(0, availableHeight) * share))
-}
+// Row budgeting lives in viewport.ts, which imports no TUI code.
 
 type FileTreeProps = {
   state: TreeState
@@ -199,15 +159,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     renderer.on?.("resize", measure)
     onCleanup(() => renderer.off?.("resize", measure))
 
-    state.setViewportHeight(
-      viewportHeightFor(terminalHeight() - SIDEBAR_CHROME_ROWS, SIDEBAR_HEIGHT_SHARE),
-    )
+    state.setViewportHeight(heightForTerminal(terminalHeight()))
   })
 
   createEffect(() => {
-    state.setViewportHeight(
-      viewportHeightFor(terminalHeight() - SIDEBAR_CHROME_ROWS, SIDEBAR_HEIGHT_SHARE),
-    )
+    state.setViewportHeight(heightForTerminal(terminalHeight()))
   })
 
   // Rows are windowed to the panel height, so a tree with thousands of entries

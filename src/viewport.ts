@@ -1,3 +1,23 @@
+/** Rows reserved for UI that is not part of the tree's window. */
+const SIDEBAR_CHROME_ROWS = 14
+
+/** Fraction of the free terminal height the tree may use. */
+const SIDEBAR_HEIGHT_SHARE = 0.6
+
+/** Used when the renderer reports no height. */
+export const DEFAULT_TERMINAL_HEIGHT = 40
+
+/** Rows the tree renders for a given available height. */
+export function viewportHeightFor(availableHeight: number, share: number): number {
+  if (!Number.isFinite(availableHeight) || !Number.isFinite(share)) return 1
+  return Math.max(1, Math.floor(Math.max(0, availableHeight) * share))
+}
+
+/** Window height for a terminal of the given height. */
+export function heightForTerminal(terminalHeight: number): number {
+  return viewportHeightFor(terminalHeight - SIDEBAR_CHROME_ROWS, SIDEBAR_HEIGHT_SHARE)
+}
+
 /**
  * A slice of the visible tree that fits the panel, chosen so the cursor row is
  * always inside it.

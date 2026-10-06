@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { computeVisibleNodes, moveCursor, toggleExpand, type VisibleNode } from "./FileTree"
+import { computeVisibleNodes, moveCursor, toggleExpand, type VisibleNode } from "./treeLogic"
 import type { DirEntry } from "./fileSystem"
 
 function makeEntry(name: string, isDirectory: boolean): DirEntry {

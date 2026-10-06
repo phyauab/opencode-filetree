@@ -1,6 +1,20 @@
-import { describe, it, expect, beforeEach } from "bun:test"
+import { describe, it, expect } from "bun:test"
 
 type AnyFn = (...args: any[]) => any
+
+// Rendering the plugin's JSX needs OpenCode's copy of @opentui/solid, which is
+// deliberately not installed here (see scripts/verify-no-local-opentui.test.ts).
+// Without it these checks cannot run, so they are skipped rather than failing.
+const canRenderJsx = await (async () => {
+  try {
+    await import("@opentui/solid/jsx-dev-runtime")
+    return true
+  } catch {
+    return false
+  }
+})()
+
+const itRender = canRenderJsx ? it : it.skip
 
 /** Captures what the plugin registers, and lets a test make calls fail. */
 function createMockContext(options: { promptFails?: boolean } = {}) {
@@ -62,23 +76,21 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
 }
 
 describe("plugin entry", () => {
-  let mod: typeof import("./tui")
+  const load = () => import("./tui")
 
-  beforeEach(async () => {
-    mod = await import("./tui")
-  })
-
-  it("registers the sidebar.content slot", async () => {
+  itRender("registers the sidebar.content slot", async () => {
+    const { default: mod } = await load()
     const { context, slots } = createMockContext()
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     expect(slots).toHaveLength(1)
     expect(slots[0].claim.append).toBe("sidebar.content")
   })
 
-  it("registers every documented binding", async () => {
+  itRender("registers every documented binding", async () => {
+    const { default: mod } = await load()
     const { context, allCommands } = createMockContext()
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     const ids = allCommands().map((c: any) => c.id)
     for (const id of [
@@ -96,9 +108,10 @@ describe("plugin entry", () => {
     }
   })
 
-  it("scopes navigation keys to tree mode and leaves the prompt's keys alone", async () => {
+  itRender("scopes navigation keys to tree mode and leaves the prompt's keys alone", async () => {
+    const { default: mod } = await load()
     const { context, allCommands } = createMockContext()
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     const inTreeMode = allCommands().filter((c: any) => c.mode === "filetree")
     const binds = inTreeMode.map((c: any) => c.bind)
@@ -114,9 +127,10 @@ describe("plugin entry", () => {
     expect(hostBinds).not.toContain("enter")
   })
 
-  it("pushes tree mode on focus and pops it on exit", async () => {
+  itRender("pushes tree mode on focus and pops it on exit", async () => {
+    const { default: mod } = await load()
     const { context, allCommands, pushed } = createMockContext()
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     const byId = (id: string) => allCommands().find((c: any) => c.id === id)!
 
@@ -128,9 +142,10 @@ describe("plugin entry", () => {
     expect(pushed).toEqual(["filetree", "filetree"])
   })
 
-  it("navigating an empty tree does not throw", async () => {
+  itRender("navigating an empty tree does not throw", async () => {
+    const { default: mod } = await load()
     const { context, allCommands } = createMockContext()
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     const byId = (id: string) => allCommands().find((c: any) => c.id === id)!
     for (const id of ["filetree.up", "filetree.down", "filetree.expand", "filetree.collapse", "filetree.send", "filetree.refresh"]) {
@@ -138,9 +153,10 @@ describe("plugin entry", () => {
     }
   })
 
-  it("the send path never rejects, whatever the prompt call does", async () => {
+  itRender("the send path never rejects, whatever the prompt call does", async () => {
+    const { default: mod } = await load()
     const { context, allCommands, prompts, toasts } = createMockContext({ promptFails: true })
-    await mod.default.setup(context)
+    await mod.setup(context)
 
     const byId = (id: string) => allCommands().find((c: any) => c.id === id)!
 
@@ -151,14 +167,15 @@ describe("plugin entry", () => {
     expect(toasts).toHaveLength(0)
   })
 
-  it("cleanup unregisters the slot and leaves tree mode", async () => {
+  itRender("cleanup unregisters the slot and leaves tree mode", async () => {
+    const { default: mod } = await load()
     let unregistered = false
     const { context } = createMockContext()
     context.ui.slot = () => () => {
       unregistered = true
     }
 
-    const cleanup = await mod.default.setup(context)
+    const cleanup = await mod.setup(context)
     await cleanup?.()
     expect(unregistered).toBe(true)
   })

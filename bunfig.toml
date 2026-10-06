@@ -1,0 +1,7 @@
+# Tests run against stub implementations of the runtime packages OpenCode
+# provides. The plugin deliberately ships no copy of solid-js or @opentui/solid
+# so it shares the host's module instances; without stubs every module importing
+# createSignal or JSX fails to load.
+
+[test]
+preload = ["./scripts/test-stubs.ts"]

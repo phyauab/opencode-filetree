@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { viewportHeightFor } from "./FileTree"
+import { viewportHeightFor, heightForTerminal } from "./viewport"
 
 describe("viewportHeightFor", () => {
   it("takes the given share of the available height", () => {
@@ -15,11 +15,22 @@ describe("viewportHeightFor", () => {
     expect(viewportHeightFor(35, 0.6)).toBe(21)
   })
 
-  it("handles a small terminal", () => {
-    expect(viewportHeightFor(20, 0.6)).toBe(12)
+  it("survives a NaN height", () => {
+    expect(viewportHeightFor(Number.NaN, 0.6)).toBe(1)
+  })
+})
+
+describe("heightForTerminal", () => {
+  it("reserves room for the rest of the sidebar", () => {
+    // 40 rows minus 14 reserved, at a 60% share.
+    expect(heightForTerminal(40)).toBe(15)
   })
 
-  it("survives a NaN height by returning one row", () => {
-    expect(viewportHeightFor(Number.NaN, 0.6)).toBe(1)
+  it("scales with the terminal", () => {
+    expect(heightForTerminal(100)).toBe(51)
+  })
+
+  it("still gives one row on a tiny terminal", () => {
+    expect(heightForTerminal(4)).toBe(1)
   })
 })

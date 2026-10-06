@@ -9,7 +9,20 @@
     "outDir": "dist",
     "declaration": true,
     "skipLibCheck": true,
-    "types": ["bun", "node"]
+    "types": ["bun", "node"],
+    // @opentui/solid must never be installed here: OpenCode's Solid context
+    // objects are only visible to code sharing its module instance, so a local
+    // copy makes every JSX element fail with "No renderer found". The aliased
+    // dev copies supply types only; resolution at runtime falls through to the
+    // host.
+    "paths": {
+      "@opentui/solid": ["./node_modules/opentui-types-solid"],
+      "@opentui/solid/*": ["./node_modules/opentui-types-solid/*"],
+      "@opentui/core": ["./node_modules/opentui-types-core"],
+      "@opentui/core/*": ["./node_modules/opentui-types-core/*"],
+      "solid-js": ["./node_modules/solid-types"],
+      "solid-js/*": ["./node_modules/solid-types/*"]
+    }
   },
   "include": ["src"]
 }

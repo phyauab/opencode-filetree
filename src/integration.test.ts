@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { readDir, watch, isGitRepo, getGitStatus, resolvePath } from "./fileSystem"
 import { loadDir, applyResult } from "./loader"
-import { computeVisibleNodes, moveCursor, toggleExpand } from "./FileTree"
+import { computeVisibleNodes, moveCursor, toggleExpand } from "./treeLogic"
 import { createTreeState } from "./store"
 import { promptSession } from "./commands"
 
