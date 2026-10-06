@@ -8,27 +8,22 @@ import { layoutKey } from "./persist"
 import { restorePaths, persistPaths, shouldRestore, isRestorable } from "./layoutSync"
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
+import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
 // stays testable without OpenCode's runtime.
 
 export { computeVisibleNodes }
 
-// --- Component ---
-
 /** Milliseconds of filesystem quiet before the tree re-reads. */
 const REFRESH_DEBOUNCE = 250
-
-// Row budgeting lives in viewport.ts, which imports no TUI code.
 
 type FileTreeProps = {
   state: TreeState
   /**
    * The plugin context, passed down by the plugin entry rather than read with
-   * `usePlugin()`. Importing `usePlugin` from our own copy of
-   * `@opencode/plugin/tui` yields a different Solid context object than the
-   * one the host provides, so it always throws "PluginContextProvider is
-   * missing". A type-only import is erased at build time and cannot do that.
+   * `usePlugin()`. Reading it from our own copy of `@opencode/plugin/tui`
+   * yields a different Solid context object than the host's.
    */
   context: Context
 }
@@ -39,13 +34,15 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
+  const [empty, setEmpty] = createSignal<EmptyReason>({ kind: "loading" })
+
   const reload = () => {
     state.setEntries([])
     state.setChildrenMap(new Map())
     state.setFailures(new Map())
     setReloadToken((n) => n + 1)
   }
-  props.state.setReload(reload)
+  state.setReload(reload)
 
   // Git status is re-read on demand rather than on every filesystem event.
   const refreshGitStatus = async (dir: string) => {
@@ -54,14 +51,12 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   // Durable layout: which folders were open, per project root.
-  const layout = context.storage.memory(layoutKey(context.location?.directory ?? ""), {
-    initial: { expanded: [] as string[] },
-  })
-  const [expandedLayout, setExpandedLayout] = layout
+  const [expandedLayout, setExpandedLayout] = context.storage.memory(
+    layoutKey(resolveDirectory(context) ?? ""),
+    { initial: { expanded: [] as string[] } },
+  )
 
   // Restore the previous session's expansion once the root has been read.
-  // Paths that no longer resolve to a directory are dropped rather than
-  // restored, so a stale layout cannot expand a folder that was deleted.
   createEffect(() => {
     const entries = state.entries()
     if (!shouldRestore(expandedLayout, state.expanded(), entries.length > 0)) return
@@ -79,14 +74,30 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     })
   })
 
+  // Read the project root and watch it for changes.
   createEffect(() => {
-    const dir = context.location?.directory
-    if (!dir) return
+    const dir = resolveDirectory(context)
+    if (!dir) {
+      setEmpty({ kind: "no-location" })
+      return
+    }
 
     reloadToken()
-    void loadDir(readDir, dir).then((result) => {
-      state.setEntries(result.ok ? result.entries : [])
-    })
+    setEmpty({ kind: "loading" })
+
+    const reloadEntries = () => {
+      void loadDir(readDir, dir).then((result) => {
+        if (result.ok) {
+          state.setEntries(result.entries)
+          setEmpty({ kind: "empty" })
+        } else {
+          state.setEntries([])
+          setEmpty({ kind: "unreadable", reason: result.reason })
+        }
+      })
+    }
+
+    reloadEntries()
     void refreshGitStatus(dir)
 
     // Coalesce bursts: a checkout or build fires thousands of events, and each
@@ -94,12 +105,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const onChange = () => {
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        void loadDir(readDir, dir).then((result) => {
-          if (result.ok) state.setEntries(result.entries)
-        })
-        void refreshGitStatus(dir)
-      }, REFRESH_DEBOUNCE)
+      timer = setTimeout(reloadEntries, REFRESH_DEBOUNCE)
     }
 
     const unwatch = watch(dir, onChange)
@@ -117,7 +123,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
     for (const path of state.expanded()) {
       // The root itself is never an entry in the tree, so skip it.
-      if (path === context.location?.directory) continue
+      if (path === resolveDirectory(context)) continue
       if (children.has(path) || failures.has(path)) continue
 
       void loadDir(readDir, path).then((result) => {
@@ -140,8 +146,6 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   // sidebar slot reports no dimensions of its own. Reading the renderer
   // directly avoids `useTerminalDimensions`, which resolves a Solid context
   // from this package's own copy of @opentui/solid rather than the host's.
-  // Leaving room for the sidebar's other content and the "more above/below"
-  // hints keeps the last tree row visible.
   const [terminalHeight, setTerminalHeight] = createSignal(
     context.renderer?.height ?? DEFAULT_TERMINAL_HEIGHT,
   )
@@ -158,8 +162,6 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
     renderer.on?.("resize", measure)
     onCleanup(() => renderer.off?.("resize", measure))
-
-    state.setViewportHeight(heightForTerminal(terminalHeight()))
   })
 
   createEffect(() => {
@@ -176,12 +178,19 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     for (let i = view.start; i < Math.min(view.end, nodes.length); i++) {
       slice.push({ node: nodes[i], index: i })
     }
-    return { slice, failures, total: nodes.length, view }
+    return { slice, failures, total: nodes.length, view, reason: empty() }
   }
 
   return (
     <box>
-      <Show when={rows().total > 0} fallback={<text fg="dim">no files</text>}>
+      <Show
+        when={rows().total > 0}
+        fallback={
+          <text fg="dim">
+            {describeEmpty(rows().reason, rows().total, state.viewportHeight())}
+          </text>
+        }
+      >
         <For each={rows().slice}>
           {({ node, index }) => (
             <>
@@ -195,7 +204,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
               <Show when={rows().failures.get(node.entry.path)}>
                 {(reason) => (
                   <text fg="yellow">
-                    {"  ".repeat(node.depth + 1)}└ {reason()}
+                    {"  ".repeat(node.depth + 1)}- {reason()}
                   </text>
                 )}
               </Show>
@@ -203,10 +212,10 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           )}
         </For>
         <Show when={rows().view.start > 0}>
-          <text fg="dim"> ↑ {rows().view.start} more above</text>
+          <text fg="dim"> {rows().view.start} more above</text>
         </Show>
         <Show when={rows().view.end < rows().total}>
-          <text fg="dim"> ↓ {rows().total - rows().view.end} more below</text>
+          <text fg="dim"> {rows().total - rows().view.end} more below</text>
         </Show>
       </Show>
     </box>
