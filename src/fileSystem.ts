@@ -1,8 +1,8 @@
 import { readdir, stat } from "node:fs/promises"
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync as nativeReaddirSync, statSync } from "node:fs"
 import { watch as fsWatch } from "node:fs"
 import { join, resolve, dirname, basename } from "node:path"
-import { execFile } from "node:child_process"
+import { execFile, execFileSync } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
@@ -22,6 +22,45 @@ async function resolvesToDirectory(fullPath: string): Promise<boolean> {
   }
 }
 
+/** Sorts folders first, then files, alphabetically within each group. */
+function sortEntries(entries: DirEntry[]): DirEntry[] {
+  entries.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  return entries
+}
+
+/** Symlinked directory check that never awaits, for the sync path. */
+function resolvesToDirectorySync(fullPath: string): boolean {
+  try {
+    return statSync(fullPath).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Synchronous directory read.
+ *
+ * The TUI plugin runtime does not reliably run promise continuations, so the
+ * tree must not depend on them: this version settles before the frame is
+ * painted and needs no microtask turn.
+ */
+export function readDirSync(path: string): DirEntry[] {
+  const items = nativeReaddirSync(path, { withFileTypes: true })
+  const entries: DirEntry[] = items.map((item) => {
+    const fullPath = join(path, item.name)
+    const isDirectory = item.isDirectory()
+      ? true
+      : item.isSymbolicLink()
+        ? resolvesToDirectorySync(fullPath)
+        : false
+    return { name: item.name, path: fullPath, isDirectory }
+  })
+  return sortEntries(entries)
+}
+
 export async function readDir(path: string): Promise<DirEntry[]> {
   const items = await readdir(path, { withFileTypes: true })
   const entries: DirEntry[] = await Promise.all(
@@ -36,11 +75,7 @@ export async function readDir(path: string): Promise<DirEntry[]> {
       return { name: item.name, path: fullPath, isDirectory }
     }),
   )
-  entries.sort((a, b) => {
-    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
-    return a.name.localeCompare(b.name)
-  })
-  return entries
+  return sortEntries(entries)
 }
 
 export function watch(path: string, callback: () => void): () => void {
@@ -55,6 +90,30 @@ export function watch(path: string, callback: () => void): () => void {
 
 export async function isGitRepo(path: string): Promise<boolean> {
   return existsSync(join(path, ".git"))
+}
+
+export function isGitRepoSync(path: string): boolean {
+  return existsSync(join(path, ".git"))
+}
+
+/**
+ * Synchronous git status. Same reason as readDirSync: the TUI runtime does not
+ * reliably drain promise continuations, and a `git status` fork costs only a
+ * few milliseconds.
+ */
+export function getGitStatusSync(repoPath: string): Map<string, string> {
+  if (!isGitRepoSync(repoPath)) return new Map()
+  try {
+    const stdout = execFileSync(
+      "git",
+      ["-c", "core.quotepath=false", "status", "--porcelain", "-z"],
+      { cwd: repoPath, timeout: 5000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8" },
+    )
+    return parseGitStatus(repoPath, stdout)
+  } catch {
+    // Not a git repo, git unavailable, or the command timed out.
+    return new Map()
+  }
 }
 
 /**

@@ -7,6 +7,21 @@ export type LoadResult =
   | { ok: false; reason: string }
 
 /**
+ * Loads a directory synchronously, converting a failure into a value.
+ *
+ * The TUI plugin runtime does not reliably run promise continuations, so the
+ * tree reads through this rather than the async `loadDir`. A project root is a
+ * few milliseconds of blocking work, which is acceptable once at mount.
+ */
+export function loadDirSync(read: (path: string) => DirEntry[], path: string): LoadResult {
+  try {
+    return { ok: true, entries: filterVisible(read(path)) }
+  } catch (error) {
+    return { ok: false, reason: describeReadError(error) }
+  }
+}
+
+/**
  * Loads a directory, converting a rejection into a value. Callers never see a
  * thrown promise, so an unreadable or vanished directory cannot take down the
  * TUI.

@@ -1,8 +1,8 @@
 import { createEffect, onCleanup, createSignal, untrack, For, Show, type Component } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
-import { readDir, watch, isGitRepo, getGitStatus } from "./fileSystem"
+import { readDirSync, watch, getGitStatusSync } from "./fileSystem"
 import { computeVisibleNodes } from "./treeLogic"
-import { loadDir, applyResult } from "./loader"
+import { loadDirSync, applyResult } from "./loader"
 import { heightForTerminal, DEFAULT_TERMINAL_HEIGHT } from "./viewport"
 import { layoutKey } from "./persist"
 import { restorePaths, persistPaths, shouldRestore, isRestorable } from "./layoutSync"
@@ -39,20 +39,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   // The directory is read once, in the component body, rather than in an
   // effect: the host's renderer does not guarantee effect scheduling, and the
   // initial read must not depend on it.
-  const directory = resolveDirectory(context)
-  if (!directory) {
-    setEmpty({ kind: "no-location" })
-  } else {
-    void loadDir(readDir, directory).then((result) => {
-      if (result.ok) {
-        state.setEntries(result.entries)
-        setEmpty({ kind: "empty" })
-      } else {
-        state.setEntries([])
-        setEmpty({ kind: "unreadable", reason: result.reason })
-      }
-    })
-  }
+  // (the read itself happens above, synchronously)
 
   const reload = () => {
     state.setEntries([])
@@ -62,10 +49,26 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
   state.setReload(reload)
 
-  // Git status is re-read on demand rather than on every filesystem event.
-  const refreshGitStatus = async (dir: string) => {
-    if (await isGitRepo(dir)) state.setGitStatusMap(await getGitStatus(dir))
-    else state.setGitStatusMap(new Map())
+  // Git status is read synchronously; see fileSystem.ts for why.
+  const refreshGitStatus = (dir: string) => {
+    state.setGitStatusMap(getGitStatusSync(dir))
+  }
+
+  // The directory is read once, in the component body, synchronously. The host's
+  // plugin runtime does not reliably run promise continuations, so an await here
+  // would leave the tree stuck on its loading state.
+  const directory = resolveDirectory(context)
+  if (!directory) {
+    setEmpty({ kind: "no-location" })
+  } else {
+    const result = loadDirSync(readDirSync, directory)
+    if (result.ok) {
+      state.setEntries(result.entries)
+      setEmpty({ kind: "empty" })
+    } else {
+      setEmpty({ kind: "unreadable", reason: result.reason })
+    }
+    refreshGitStatus(directory)
   }
 
   // Durable layout: which folders were open, per project root.
@@ -103,19 +106,18 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     if (!dir) return
 
     const reloadEntries = () => {
-      void loadDir(readDir, dir).then((result) => {
-        if (result.ok) {
-          state.setEntries(result.entries)
-          setEmpty({ kind: "empty" })
-        } else {
-          state.setEntries([])
-          setEmpty({ kind: "unreadable", reason: result.reason })
-        }
-      })
+      const result = loadDirSync(readDirSync, dir)
+      if (result.ok) {
+        state.setEntries(result.entries)
+        setEmpty({ kind: "empty" })
+      } else {
+        state.setEntries([])
+        setEmpty({ kind: "unreadable", reason: result.reason })
+      }
     }
 
     reloadEntries()
-    void refreshGitStatus(dir)
+    refreshGitStatus(dir)
 
     // Coalesce bursts: a checkout or build fires thousands of events, and each
     // one would otherwise fork `git status` and `readDir`.
@@ -143,12 +145,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       if (path === resolveDirectory(context)) continue
       if (children.has(path) || failures.has(path)) continue
 
-      void loadDir(readDir, path).then((result) => {
-        setTimeout(() => {
-          state.setChildrenMap((prev) => applyResult(prev, state.failures(), path, result).children)
-          state.setFailures((prev) => applyResult(children, prev, path, result).failures)
-        }, 0)
-      })
+      const result = loadDirSync(readDirSync, path)
+      setTimeout(() => {
+        state.setChildrenMap((prev) => applyResult(prev, state.failures(), path, result).children)
+        state.setFailures((prev) => applyResult(children, prev, path, result).failures)
+      }, 0)
     }
   })
 
