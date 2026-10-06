@@ -60,19 +60,33 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Press `ctrl+f` to focus the file tree. While it has focus:
+Press `ctrl+t`, type `/files`, or pick "File tree: focus" from the command
+palette (`ctrl+p`) to give the tree keyboard focus. While focused:
 
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Move selection |
 | `→` | Expand folder |
 | `←` | Collapse folder |
-| `enter` | Open file in `$EDITOR` (defaults to `code`) |
+| `enter` | Open file in `$EDITOR` |
 | `ctrl+o` | Send the file path to the current session |
 | `r` | Refresh the tree |
-| `escape` | Return focus to the prompt |
+| `esc` | Return focus to the prompt |
 
-The tree is always visible in the sidebar; only the keyboard focus moves.
+The tree is always visible in the sidebar; only keyboard focus moves.
+
+Navigation keys are scoped to this mode rather than bound globally, so the
+arrows keep working in the prompt.
+
+`ctrl+f` is deliberately not used: the prompt binds it to "move forward one
+character", so the tree never sees it. To use a different key, add to
+`~/.config/opencode/tui.json`:
+
+```json
+{
+  "keybinds": { "filetree.enter-mode": "ctrl+g" }
+}
+```
 
 ## Files with git changes
 

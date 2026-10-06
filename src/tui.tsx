@@ -85,16 +85,27 @@ export default Plugin.define({
       popTreeMode = undefined
     }
 
+    // Entering tree mode is the only binding active in the host's own input
+    // mode. `ctrl+f` is not used: the prompt binds it to "move forward one
+    // character", so the tree would never receive it. Rebind in tui.json under
+    // "keybinds" if ctrl+t clashes with something else.
     context.keymap.layer(() => ({
       commands: [
         {
           id: "filetree.enter-mode",
           title: "File tree: focus",
           group: "File tree",
-          bind: "ctrl+f",
+          bind: "ctrl+t",
           palette: true,
+          slash: { name: "files", aliases: ["ft"] },
           suggested: true,
           run: enterTreeMode,
+        },
+        {
+          id: "filetree.send",
+          title: "File tree: send to session",
+          bind: "ctrl+o",
+          run: () => commands.send(),
         },
       ],
     }))
