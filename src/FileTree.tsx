@@ -1,6 +1,6 @@
 import { createEffect, onCleanup, createSignal, For, Show, type Component } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
-import { usePlugin } from "@opencode/plugin/tui"
+import type { Context } from "@opencode/plugin/tui/context"
 import { readDir, watch, isGitRepo, getGitStatus, type DirEntry } from "./fileSystem"
 import { loadDir, applyResult } from "./loader"
 import { layoutKey } from "./persist"
@@ -55,10 +55,18 @@ const SIDEBAR_HEIGHT_SHARE = 0.6
 
 type FileTreeProps = {
   state: TreeState
+  /**
+   * The plugin context, passed down by the plugin entry rather than read with
+   * `usePlugin()`. Importing `usePlugin` from our own copy of
+   * `@opencode/plugin/tui` yields a different Solid context object than the
+   * one the host provides, so it always throws "PluginContextProvider is
+   * missing". A type-only import is erased at build time and cannot do that.
+   */
+  context: Context
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
-  const context = usePlugin()
+  const context = props.context
   const state = props.state
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
@@ -98,7 +106,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   createEffect(() => {
     const expanded = state.expanded()
     if (expanded.size === 0) return
-    void setExpandedLayout((draft) => {
+    void setExpandedLayout((draft: { expanded: string[] }) => {
       draft.expanded = persistPaths(expanded)
     })
   })

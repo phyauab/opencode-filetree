@@ -19,7 +19,7 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (input) => {
         if (input.sessionID) setSessionID(input.sessionID)
-        return <FileTree state={state} />
+        return <FileTree state={state} context={context} />
       },
     })
 
