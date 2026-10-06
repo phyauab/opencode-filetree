@@ -2,6 +2,7 @@ import { createSignal, type Setter } from "solid-js"
 import type { DirEntry } from "./fileSystem"
 import { computeVisibleNodes, type VisibleNode } from "./FileTree"
 import type { ChildrenMap, FailuresMap } from "./loader"
+import { computeViewport, viewportHeight, type Viewport } from "./viewport"
 
 export type TreeState = {
   entries: () => DirEntry[]
@@ -23,6 +24,11 @@ export type TreeState = {
   /** Re-reads the project root. Installed by the FileTree component. */
   setReload: (fn: () => void) => void
   reload: () => void
+  /** Rows that fit the panel; the component sets this from the layout. */
+  viewportHeight: () => number
+  setViewportHeight: Setter<number>
+  /** The slice of visible rows currently rendered. */
+  viewport: () => Viewport
 }
 
 export function createTreeState(): TreeState {
@@ -32,6 +38,10 @@ export function createTreeState(): TreeState {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
   const [cursor, setCursor] = createSignal(0)
   const [gitStatusMap, setGitStatusMap] = createSignal<Map<string, string>>(new Map())
+  const [height, setHeight] = createSignal(20)
+  // A plain variable, not a signal: it is written and read inside the viewport
+  // memo below, which already tracks everything it depends on.
+  let scroll = 0
   let reloadFn: (() => void) | undefined
 
   const visibleNodes = () => computeVisibleNodes(entries(), expanded(), childrenMap())
@@ -49,6 +59,15 @@ export function createTreeState(): TreeState {
       return
     }
     if (cursor() > max - 1) setCursor(max - 1)
+  }
+
+  // A plain function rather than createMemo: memos outside a reactive root
+  // (tests, the plugin's own setup) do not recompute on dependency change.
+  const viewport = () => {
+    const total = visibleNodes().length
+    const view = computeViewport(total, cursor(), height(), scroll)
+    scroll = view.start
+    return view
   }
 
   return {
@@ -71,5 +90,8 @@ export function createTreeState(): TreeState {
       reloadFn = fn
     },
     reload: () => reloadFn?.(),
+    viewportHeight: () => viewportHeight(height()),
+    setViewportHeight: setHeight,
+    viewport,
   }
 }

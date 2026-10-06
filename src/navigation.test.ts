@@ -71,6 +71,91 @@ describe("createTreeState", () => {
     expect(state.cursor()).toBe(1)
   })
 
+  it("renders only the rows that fit, following the cursor", () => {
+    const state = createTreeState()
+    state.setEntries(
+      Array.from({ length: 100 }, (_, i) => ({
+        name: `f${i}.ts`,
+        path: `/proj/f${i}.ts`,
+        isDirectory: false,
+      })),
+    )
+    state.setViewportHeight(20)
+
+    expect(state.viewport()).toEqual({ start: 0, end: 20 })
+
+    state.setCursor(50)
+    expect(state.viewport()).toEqual({ start: 31, end: 51 })
+  })
+
+  it("keeps the view still while the cursor moves within it", () => {
+    const state = createTreeState()
+    state.setEntries(
+      Array.from({ length: 100 }, (_, i) => ({
+        name: `f${i}.ts`,
+        path: `/proj/f${i}.ts`,
+        isDirectory: false,
+      })),
+    )
+    state.setViewportHeight(20)
+
+    state.setCursor(50)
+    // Window covers indices 31..50 inclusive.
+    const first = state.viewport()
+    expect(first).toEqual({ start: 31, end: 51 })
+
+    state.setCursor(35)
+    expect(state.viewport()).toEqual(first)
+    state.setCursor(50)
+    expect(state.viewport()).toEqual(first)
+  })
+
+  it("always renders the cursor row", () => {
+    const state = createTreeState()
+    state.setEntries(
+      Array.from({ length: 200 }, (_, i) => ({
+        name: `f${i}.ts`,
+        path: `/proj/f${i}.ts`,
+        isDirectory: false,
+      })),
+    )
+    state.setViewportHeight(15)
+
+    for (let cursor = 0; cursor < 200; cursor++) {
+      state.setCursor(cursor)
+      const view = state.viewport()
+      expect(view.start).toBeLessThanOrEqual(cursor)
+      expect(view.end).toBeGreaterThan(cursor)
+    }
+  })
+
+  it("renders everything when the tree fits the panel", () => {
+    const state = createTreeState()
+    state.setEntries([
+      { name: "a.ts", path: "/proj/a.ts", isDirectory: false },
+      { name: "b.ts", path: "/proj/b.ts", isDirectory: false },
+    ])
+    state.setViewportHeight(20)
+    expect(state.viewport()).toEqual({ start: 0, end: 2 })
+  })
+
+  it("reflects a shrinking panel height", () => {
+    const state = createTreeState()
+    state.setEntries(
+      Array.from({ length: 100 }, (_, i) => ({
+        name: `f${i}.ts`,
+        path: `/proj/f${i}.ts`,
+        isDirectory: false,
+      })),
+    )
+    state.setViewportHeight(40)
+    state.setCursor(0)
+    expect(state.viewport().end).toBe(40)
+
+    state.setViewportHeight(10)
+    expect(state.viewport()).toEqual({ start: 0, end: 10 })
+  })
+
   it("reflects expanded folders in visibleNodes", () => {
     const state = createTreeState()
     state.setEntries([{ name: "src", path: "/proj/src", isDirectory: true }])
