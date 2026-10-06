@@ -43,6 +43,18 @@ type FileTreeProps = {
    * has focus, instead of taking over the host's keyboard via a mode.
    */
   onRoot?: (root: TreeRoot) => void
+  /**
+   * Called when the tree is clicked, so the plugin entry can hand it the
+   * navigation keys. Clicking is the discoverable way in; the palette command
+   * is the reliable one.
+   */
+  onActivate?: () => void
+  /**
+   * True while the tree holds the navigation keys. Rendered as a hint so the
+   * state is visible: the selection highlight alone looks identical whether or
+   * not the keys are live, which made this impossible to diagnose by looking.
+   */
+  active?: boolean
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
@@ -227,22 +239,21 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   return (
     <box
+      // The tree is the click target that hands it the navigation keys.
       focusable
       // Clicking the tree focuses it, which is what makes the scoped keymap
       // layer reachable. No mode is pushed, so the host keeps its own keys.
       // Focus goes through the renderer, which is what tracks the focused
       // renderable and routes keys to it.
-      onMouseDown={() => {
-        const renderer = props.context.renderer as unknown as {
-          focusRenderable?: (r: unknown) => void
-        }
-        renderer.focusRenderable?.(rootRef)
-      }}
+      onMouseDown={() => props.onActivate?.()}
       ref={(root: TreeRoot) => {
         rootRef = root
         props.onRoot?.(root)
       }}
     >
+      <Show when={props.active}>
+        <text fg="yellow">[tree active — esc to exit]</text>
+      </Show>
       <Show
         when={rows().total > 0}
         fallback={

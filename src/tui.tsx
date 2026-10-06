@@ -16,12 +16,28 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (input) => {
         if (input.sessionID) setSessionID(input.sessionID)
-        return <FileTree state={state} context={context} onRoot={(root) => (treeRoot = root)} />
+        return (
+          <FileTree
+            state={state}
+            context={context}
+            onRoot={(root) => (treeRoot = root)}
+            onActivate={focusTree}
+            active={treeActive()}
+          />
+        )
       },
     })
 
     const notify = (message: string, variant: "info" | "error") =>
       context.ui.toast.show({ message, variant })
+
+    /** Layer factories, kept so the debug toast can report what the host enabled. */
+    const layers: { factory: () => { enabled?: unknown } }[] = []
+    const realLayer = context.keymap.layer.bind(context.keymap)
+    context.keymap.layer = ((factory: () => any) => {
+      layers.push({ factory })
+      return realLayer(factory)
+    }) as typeof context.keymap.layer
 
     const commands = createTreeCommands({
       visibleNodes: state.visibleNodes,
@@ -39,36 +55,25 @@ export default Plugin.define({
     })
 
     /**
-     * The tree's root renderable, once the sidebar slot has rendered it.
-     * The navigation layer is scoped to it, so the keys are live only while the
-     * tree itself holds focus.
+     * Whether the tree currently owns the navigation keys.
+     *
+     * This is a plain reactive flag rather than renderer focus or a pushed input
+     * mode. Focus was tried and could not be verified from outside the host, and
+     * pushing a mode broke the host's key routing outright. A layer's `enabled`
+     * is reactive and disables only this layer, so the host's own keys are never
+     * taken away and cannot be left dead.
      */
-    let treeRoot: TreeRoot | undefined
-
-    /** True while the tree owns focus. Read by the layer on every key event. */
-    const treeFocused = () => treeRoot?.focused === true
+    const [treeActive, setTreeActive] = createSignal(false)
 
     const focusTree = () => {
-      if (!treeRoot) return
-      // The renderer's own focus API, not Renderable.focus(): the renderer
-      // tracks which renderable holds focus and routes keys to it, so focusing
-      // through the renderable alone leaves the renderer's view unchanged.
-      ;(context.renderer as unknown as {
-        focusRenderable?: (r: unknown) => void
-      }).focusRenderable?.(treeRoot)
+      setTreeActive(true)
+    }
+    const blurTree = () => {
+      setTreeActive(false)
     }
 
-    /**
-     * Releases the tree's focus so the host resumes routing keys. Focusing null
-     * is not supported, so the previous owner is restored explicitly when the
-     * tree had focus.
-     */
-    const blurTree = () => {
-      if (!treeRoot) return
-      ;(context.renderer as unknown as {
-        blurRenderable?: (r: unknown) => void
-      }).blurRenderable?.(treeRoot)
-    }
+    /** The tree's root renderable, captured for click-to-focus. */
+    let treeRoot: TreeRoot | undefined
 
     // Focus the tree. No key is bound: any binding in the host's own mode fires
     // while the user is typing, and readline already owns ctrl+f, ctrl+o and
@@ -95,15 +100,14 @@ export default Plugin.define({
       ],
     }))
 
-    // Tree navigation is scoped to the tree's own renderable, so these keys are
-    // live only while the tree has focus. Nothing global is taken over and no
-    // input mode is pushed: an earlier version pushed a mode, which left the
-    // TUI unable to route any key at all until the user clicked something.
+    // Tree navigation. The layer is enabled only while the tree is active, so the
+// host keeps its own keys the rest of the time. No mode is pushed and nothing
+// global is taken over.
 //
 // Command ids must be unique within a layer.
     context.keymap.layer(() => ({
-      target: () => (treeFocused() ? (treeRoot as never) : null),
-      enabled: treeFocused,
+      mode: "global",
+      enabled: treeActive,
       commands: [
         { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => commands.move(-1) },
         { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => commands.move(1) },
@@ -155,7 +159,12 @@ export default Plugin.define({
           `ft debug:`,
           `mode=${context.keymap.mode.current()}`,
           `root=${treeRoot ? "yes" : "no"}`,
-          `focused=${treeFocused()}`,
+          `active=${treeActive()}`,
+          `layerEnabled=${String(
+            typeof layers[1]?.factory().enabled === "function"
+              ? (layers[1].factory().enabled as () => unknown)()
+              : "n/a",
+          )}`,
           `focusApi=${renderer.focusRenderable ? "focusRenderable" : "MISSING"}`,
           `blurApi=${renderer.blurRenderable ? "blurRenderable" : "MISSING"}`,
           `hostFocus=${renderer.currentFocusedRenderable?.id ?? "none"}`,

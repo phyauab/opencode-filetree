@@ -61,9 +61,9 @@ OpenCode rewrites a fixed list of bare specifiers and
 ## Usage
 
 Open the command palette with `ctrl+p` and pick **File tree: focus** (it is in
-the "File tree" group), or click anywhere in the tree. Navigation keys are
-scoped to the tree's own focus, so they are live only while it is focused and
-the prompt keeps them at all other times. While focused:
+the "File tree" group), or just click inside the tree. While active, the tree
+shows `[tree active — esc to exit]` at the top so you can see that the keys are
+live.
 
 | Key | Action |
 |-----|--------|
@@ -83,11 +83,12 @@ The plugin binds no keys in your prompt's input mode, on purpose. Anything
 registered there fires while you are typing, and readline already owns `ctrl+f`,
 `ctrl+o` and `ctrl+t`. The focus command is palette-only by default.
 
-Navigation is scoped to the tree's renderable with `target`, not applied
-globally and not applied by pushing an input mode. Pushing a mode takes over
-the host's key routing: an earlier version did this and afterwards no key
-reached anything until the user clicked the UI, which is why `esc` now blurs the
-tree instead of popping a mode.
+Navigation is gated with the layer's `enabled` flag, not applied globally and
+not applied by pushing an input mode. Pushing a mode takes over the host's key
+routing — an earlier version did this, and afterwards no key reached anything
+until the user clicked the UI. Renderer focus was tried next and could not be
+verified from outside the host, so the gate is a plain reactive flag: it can
+only ever disable this plugin's own layer.
 
 To give it a key, add to `~/.config/opencode/tui.json` and pick something
 readline does not use:
