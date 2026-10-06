@@ -14,16 +14,60 @@ const EXTENSION_ICONS: Record<string, string> = {
   env: "🔒",
 }
 
+/** Directories that would flood the tree with noise or build output. */
+const HIDDEN_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  ".next",
+  ".turbo",
+  ".cache",
+  "__pycache__",
+  ".venv",
+])
+
+/**
+ * True for entries the tree hides by default: dotfiles, and directories that
+ * hold generated or vendored content.
+ */
+export function isHidden(name: string, isDirectory: boolean): boolean {
+  if (name === "." || name === "..") return true
+  if (!isDirectory) return false
+  if (HIDDEN_DIRECTORIES.has(name)) return true
+  // Keep dotfiles like .gitignore and .env visible; hide dot-directories.
+  return name.startsWith(".")
+}
+
 export function getFileIcon(name: string, isDirectory: boolean): string {
   if (isDirectory) return "📁"
   const ext = name.split(".").pop()?.toLowerCase() ?? ""
   return EXTENSION_ICONS[ext] ?? "📄"
 }
 
+const GIT_LABELS: Record<string, string> = {
+  M: "modified",
+  A: "added",
+  D: "deleted",
+  R: "renamed",
+  C: "copied",
+  U: "unmerged",
+  "?": "untracked",
+}
+
+/** Short marker shown after a file name, e.g. " [M]" for modified. */
 export function getGitStatusIndicator(status: string | undefined): string {
   if (!status) return ""
+  if (status === "?") return " [?]"
   if (status === "M") return " [M]"
   if (status === "A") return " [A]"
-  if (status === "?") return " [?]"
+  if (status === "D") return " [D]"
   return ` [${status}]`
+}
+
+/** Longer description of a git status code, for tooltips and tests. */
+export function describeGitStatus(status: string | undefined): string {
+  if (!status) return "clean"
+  return GIT_LABELS[status] ?? status
 }

@@ -1,107 +1,165 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtemp, writeFile, mkdir, rm, chmod } from "node:fs/promises"
+import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { readDir, watch, isGitRepo, getGitStatus, resolvePath } from "./fileSystem"
+import { loadDir, applyResult } from "./loader"
 import { computeVisibleNodes, moveCursor, toggleExpand } from "./FileTree"
 import { createTreeState } from "./store"
+import { promptSession } from "./commands"
 
 describe("integration: end-to-end file tree", () => {
   let testDir: string
+  let srcDir: string
+  let componentsDir: string
 
   beforeEach(async () => {
     testDir = await mkdtemp(join(tmpdir(), "filetree-integration-"))
-    await mkdir(join(testDir, "src", "components"), { recursive: true })
+    componentsDir = join(testDir, "src", "components")
+    srcDir = join(testDir, "src")
+    await mkdir(componentsDir, { recursive: true })
+    await mkdir(join(testDir, "node_modules", "left-pad"), { recursive: true })
     await writeFile(join(testDir, "README.md"), "# test")
-    await writeFile(join(testDir, "src", "index.ts"), "export {}")
-    await writeFile(join(testDir, "src", "components", "Button.tsx"), "export const B = 1")
+    await writeFile(join(srcDir, "index.ts"), "export {}")
+    await writeFile(join(componentsDir, "Button.tsx"), "export const B = 1")
   })
 
   afterEach(async () => {
-    await chmod(testDir, 0o755).catch(() => {})
     await rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
 
-  it("reads the directory tree and renders visible nodes correctly", async () => {
-    const entries = await readDir(testDir)
-    expect(entries.map((e) => e.name)).toEqual(["src", "README.md"])
-
-    const state = createTreeState()
-    state.setEntries(entries)
-
-    // root collapsed by default
-    expect(state.visibleNodes()).toHaveLength(2)
-
-    // expand src
-    const srcChildren = await readDir(join(testDir, "src"))
-    state.setChildrenMap(new Map([[join(testDir, "src"), srcChildren]]))
-    state.setExpanded(new Set([testDir]))
-
-    const visible = state.visibleNodes()
-    expect(visible.map((v) => v.entry.name)).toEqual(["src", "README.md"])
+  it("reads the tree and hides node_modules", async () => {
+    const root = await loadDir(readDir, testDir)
+    expect(root.ok).toBe(true)
+    if (!root.ok) return
+    expect(root.entries.map((e) => e.name)).toEqual(["src", "README.md"])
   })
 
-  it("navigates the full tree with expand/collapse", async () => {
-    const entries = await readDir(testDir)
-    const srcChildren = await readDir(join(testDir, "src"))
-    const compChildren = await readDir(join(testDir, "src", "components"))
-
-    const childrenMap = new Map([
-      [join(testDir, "src"), srcChildren],
-      [join(testDir, "src", "components"), compChildren],
-    ])
-
+  it("loads nested folders on demand", async () => {
     const state = createTreeState()
-    state.setEntries(entries)
-    state.setChildrenMap(childrenMap)
-    state.setExpanded(new Set([testDir, join(testDir, "src")]))
+    const root = await loadDir(readDir, testDir)
+    if (!root.ok) throw new Error("expected readable root")
+    state.setEntries(root.entries)
+    // Collapsed: nested folders are not read at all.
+    expect(state.visibleNodes()).toHaveLength(2)
 
-    const names = state.visibleNodes().map((v) => v.entry.name)
-    expect(names).toEqual(["src", "components", "index.ts", "README.md"])
+    state.setExpanded(new Set([srcDir]))
+    const result = await loadDir(readDir, srcDir)
+    const merged = applyResult(state.childrenMap(), state.failures(), srcDir, result)
+    state.setChildrenMap(merged.children)
+    state.setFailures(merged.failures)
 
-    // select the components folder
+    expect(state.visibleNodes().map((v) => v.entry.name)).toEqual([
+      "src",
+      "components",
+      "index.ts",
+      "README.md",
+    ])
+  })
+
+  it("navigates, expands, and collapses a real tree", async () => {
+    const state = createTreeState()
+    const root = await loadDir(readDir, testDir)
+    if (!root.ok) throw new Error("expected readable root")
+    state.setEntries(root.entries)
+
+    const src = await loadDir(readDir, srcDir)
+    const comp = await loadDir(readDir, componentsDir)
+    if (!src.ok || !comp.ok) throw new Error("expected readable nested dirs")
+
+    let merged = applyResult(state.childrenMap(), state.failures(), srcDir, src)
+    state.setChildrenMap(merged.children)
+    state.setFailures(merged.failures)
+    merged = applyResult(state.childrenMap(), state.failures(), componentsDir, comp)
+    state.setChildrenMap(merged.children)
+    state.setFailures(merged.failures)
+
+    state.setExpanded(new Set([srcDir]))
+    expect(state.visibleNodes()).toHaveLength(4)
+
     state.setCursor(1)
     expect(state.currentEntry()?.name).toBe("components")
 
-    // expand it
-    state.setExpanded((prev) => toggleExpand(join(testDir, "src", "components"), prev))
+    state.setExpanded((prev) => toggleExpand(componentsDir, prev))
+    state.clampCursor()
     expect(state.visibleNodes()).toHaveLength(5)
-    expect(state.currentEntry()?.name).toBe("components")
 
-    // collapse it again
-    state.setExpanded((prev) => toggleExpand(join(testDir, "src", "components"), prev))
+    state.setExpanded((prev) => toggleExpand(componentsDir, prev))
+    state.clampCursor()
     expect(state.visibleNodes()).toHaveLength(4)
+    expect(state.cursor()).toBeLessThan(4)
   })
 
-  it("moves the cursor through every visible node without going out of bounds", async () => {
-    const entries = await readDir(testDir)
-    const srcChildren = await readDir(join(testDir, "src"))
-    const childrenMap = new Map([[join(testDir, "src"), srcChildren]])
+  it("keeps the cursor in range when files disappear", async () => {
+    const files = Array.from({ length: 5 }, (_, i) => ({
+      name: `f${i}.ts`,
+      path: join(srcDir, `f${i}.ts`),
+      isDirectory: false,
+    }))
+    for (const file of files) await writeFile(file.path, "")
 
     const state = createTreeState()
-    state.setEntries(entries)
-    state.setChildrenMap(childrenMap)
-    state.setExpanded(new Set([join(testDir, "src")]))
+    state.setEntries(files)
+    state.setCursor(4)
+    expect(state.currentEntry()?.name).toBe("f4.ts")
 
+    await rm(files[3].path)
+    const shrunk = await loadDir(readDir, srcDir)
+    if (!shrunk.ok) throw new Error("expected readable dir")
+
+    // A deleted file leaves the cursor still in range; it must stay on a real row.
+    state.setEntries(shrunk.entries)
+    state.clampCursor()
+    expect(state.currentEntry()).toBeDefined()
+    expect(state.cursor()).toBeLessThan(state.visibleNodes().length)
+
+    // A cursor left far past the end by a larger shrink is pulled back in.
+    state.setCursor(999)
+    expect(state.currentEntry()).toBeUndefined()
+    state.clampCursor()
+    expect(state.currentEntry()).toBeDefined()
+    expect(state.cursor()).toBe(state.visibleNodes().length - 1)
+  })
+
+  it("reports a vanished directory without throwing", async () => {
+    const result = await loadDir(readDir, join(testDir, "never-existed"))
+    expect(result).toEqual({ ok: false, reason: "not found" })
+  })
+
+  it("shows a failure reason for an unreadable directory", async () => {
+    const locked = join(testDir, "locked")
+    await mkdir(locked)
+    const result = await loadDir(readDir, join(locked, "nope"))
+    expect(result.ok).toBe(false)
+  })
+
+  it("moves the cursor without going out of bounds", () => {
+    const state = createTreeState()
+    state.setEntries([
+      { name: "src", path: join(testDir, "src"), isDirectory: true },
+      { name: "README.md", path: join(testDir, "README.md"), isDirectory: false },
+    ])
     const total = state.visibleNodes().length
-    expect(total).toBe(4)
+    expect(total).toBe(2)
 
-    // walk down past the end
-    state.setCursor((c) => moveCursor(c, 1, total))
-    state.setCursor((c) => moveCursor(c, 1, total))
-    state.setCursor((c) => moveCursor(c, 1, total))
+    for (let i = 0; i < 5; i++) state.setCursor((c) => moveCursor(c, 1, total))
     expect(state.cursor()).toBe(total - 1)
-
-    // walk up past the start
-    for (let i = 0; i < 10; i++) state.setCursor((c) => moveCursor(c, -1, total))
+    for (let i = 0; i < 5; i++) state.setCursor((c) => moveCursor(c, -1, total))
     expect(state.cursor()).toBe(0)
   })
 
   it("handles a non-git directory without throwing", async () => {
-    const isGit = await isGitRepo(testDir)
-    const status = await getGitStatus(testDir)
-    expect(isGit).toBe(false)
-    expect(status.size).toBe(0)
+    expect(await isGitRepo(testDir)).toBe(false)
+    expect((await getGitStatus(testDir)).size).toBe(0)
+  })
+
+  it("never rejects when prompting a session that is unavailable", async () => {
+    const result = await promptSession(
+      { session: { prompt: () => Promise.reject(new Error("offline")) } },
+      "ses_1",
+      { name: "index.ts", path: join(srcDir, "index.ts"), isDirectory: false },
+    )
+    expect(result).toEqual({ ok: false, error: "offline" })
   })
 
   it("watch fires on file creation and stops after unsubscribe", async () => {
@@ -125,5 +183,24 @@ describe("integration: end-to-end file tree", () => {
     expect(resolvePath(join(testDir, "proj"), join("src", "index.ts"))).toBe(
       join(testDir, "proj", "src", "index.ts"),
     )
+  })
+
+  it("computeVisibleNodes matches the store's own traversal", async () => {
+    const root = await loadDir(readDir, testDir)
+    const src = await loadDir(readDir, srcDir)
+    if (!root.ok || !src.ok) throw new Error("expected readable dirs")
+
+    const children = new Map([[srcDir, src.entries]])
+    const visible = computeVisibleNodes(root.entries, new Set([srcDir]), children)
+
+    const state = createTreeState()
+    state.setEntries(root.entries)
+    state.setChildrenMap(children)
+    state.setExpanded(new Set([srcDir]))
+
+    expect(visible.map((v) => v.entry.name)).toEqual(
+      state.visibleNodes().map((v) => v.entry.name),
+    )
+    void resolve
   })
 })

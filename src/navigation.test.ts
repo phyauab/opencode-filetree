@@ -28,6 +28,49 @@ describe("createTreeState", () => {
     expect(state.currentEntry()).toBeUndefined()
   })
 
+  it("clampCursor pulls the cursor back when the tree shrinks", () => {
+    const state = createTreeState()
+    const children = Array.from({ length: 10 }, (_, i) => ({
+      name: `f${i}.ts`,
+      path: `/proj/src/f${i}.ts`,
+      isDirectory: false,
+    }))
+    state.setEntries([{ name: "src", path: "/proj/src", isDirectory: true }])
+    state.setChildrenMap(new Map([["/proj/src", children]]))
+    state.setExpanded(new Set(["/proj/src"]))
+
+    state.setCursor(10)
+    expect(state.currentEntry()?.name).toBe("f9.ts")
+
+    // The tree shrinks underneath the cursor, as it does when files are deleted.
+    state.setChildrenMap(new Map([["/proj/src", children.slice(0, 2)]]))
+    expect(state.currentEntry()).toBeUndefined()
+
+    state.clampCursor()
+    expect(state.currentEntry()?.name).toBe("f1.ts")
+  })
+
+  it("clampCursor resets to 0 when the tree empties", () => {
+    const state = createTreeState()
+    state.setEntries([{ name: "src", path: "/proj/src", isDirectory: true }])
+    state.setCursor(3)
+
+    state.setEntries([])
+    state.clampCursor()
+    expect(state.cursor()).toBe(0)
+  })
+
+  it("clampCursor leaves an in-range cursor alone", () => {
+    const state = createTreeState()
+    state.setEntries([
+      { name: "a", path: "/proj/a", isDirectory: false },
+      { name: "b", path: "/proj/b", isDirectory: false },
+    ])
+    state.setCursor(1)
+    state.clampCursor()
+    expect(state.cursor()).toBe(1)
+  })
+
   it("reflects expanded folders in visibleNodes", () => {
     const state = createTreeState()
     state.setEntries([{ name: "src", path: "/proj/src", isDirectory: true }])

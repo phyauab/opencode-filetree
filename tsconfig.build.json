@@ -8,10 +8,5 @@
     "noEmit": false
   },
   "include": ["src"],
-  "exclude": [
-    "src/**/*.test.ts",
-    "src/**/*.test.tsx",
-    "src/opentui.d.ts",
-    "src/tui.test.ts"
-  ]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
