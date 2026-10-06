@@ -18,6 +18,17 @@ export { computeVisibleNodes }
 /** Milliseconds of filesystem quiet before the tree re-reads. */
 const REFRESH_DEBOUNCE = 250
 
+/**
+ * The parts of the tree's root renderable that the plugin entry needs: enough
+ * to move focus in and out. Typed structurally so the entry does not depend on
+ * a Renderable class it does not own.
+ */
+export type TreeRoot = {
+  focus?: () => void
+  blur?: () => void
+  focused?: boolean
+}
+
 type FileTreeProps = {
   state: TreeState
   /**
@@ -26,6 +37,12 @@ type FileTreeProps = {
    * yields a different Solid context object than the host's.
    */
   context: Context
+  /**
+   * Receives the tree's root renderable, so the plugin entry can scope a
+   * keymap layer to it. Navigation keys then apply only while this renderable
+   * has focus, instead of taking over the host's keyboard via a mode.
+   */
+  onRoot?: (root: TreeRoot) => void
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
@@ -204,8 +221,21 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
 
+  // The tree's root renderable, held so a click can focus it and the plugin
+  // entry can scope a keymap layer to it.
+  let rootRef: TreeRoot | undefined
+
   return (
-    <box>
+    <box
+      focusable
+      // Clicking the tree focuses it, which is what makes the scoped keymap
+      // layer reachable. No mode is pushed, so the host keeps its own keys.
+      onMouseDown={() => rootRef?.focus?.()}
+      ref={(root: TreeRoot) => {
+        rootRef = root
+        props.onRoot?.(root)
+      }}
+    >
       <Show
         when={rows().total > 0}
         fallback={

@@ -61,10 +61,20 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
   const allCommands = () =>
     layers.flatMap((l) => {
       const layer = l.factory()
-      return (layer.commands ?? []).map((c: any) => ({ ...c, mode: layer.mode }))
+      // `scoped` marks a layer limited to the tree's renderable by target.
+      const scoped = typeof layer.target === "function"
+      return (layer.commands ?? []).map((c: any) => ({ ...c, mode: layer.mode, scoped }))
     })
 
-  return { context, slots, layers, prompts, toasts, pushed, allCommands }
+  /** Commands in the focus-scoped navigation layer. */
+  const layersScoped = (all: { factory: AnyFn }[]) =>
+    all.flatMap((l) => {
+      const layer = l.factory()
+      if (typeof layer.target !== "function") return []
+      return (layer.commands ?? []).map((c: any) => c)
+    })
+
+  return { context, slots, layers, prompts, toasts, pushed, allCommands, layersScoped }
 }
 
 describe("plugin entry", () => {
@@ -100,38 +110,39 @@ describe("plugin entry", () => {
     }
   })
 
-  itRender("scopes navigation keys to tree mode and leaves the prompt's keys alone", async () => {
+  itRender("scopes navigation keys to the tree's focus and leaves the prompt's keys alone", async () => {
     const { default: mod } = await load()
-    const { context, allCommands } = createMockContext()
+    const { context, allCommands, layers, layersScoped } = createMockContext()
     await mod.setup(context)
 
-    const inTreeMode = allCommands().filter((c: any) => c.mode === "filetree")
-    const binds = inTreeMode.map((c: any) => c.bind)
-    expect(binds).toContain("up")
-    expect(binds).toContain("down")
-    expect(binds).toContain("enter")
+    // Arrows and enter live only in the focus-scoped layer, so the prompt keeps
+    // them.
+    const scoped = layersScoped(layers)
+    expect(scoped.map((c: any) => c.bind)).toContain("up")
+    expect(scoped.map((c: any) => c.bind)).toContain("down")
+    expect(scoped.map((c: any) => c.bind)).toContain("enter")
 
-    // Nothing outside tree mode claims arrows or enter, so the prompt keeps them.
-    const inHostMode = allCommands().filter((c: any) => c.mode !== "filetree")
-    const hostBinds = inHostMode.map((c: any) => c.bind)
-    expect(hostBinds).not.toContain("up")
-    expect(hostBinds).not.toContain("down")
-    expect(hostBinds).not.toContain("enter")
+    // Every other layer must leave the host's keys alone.
+    const unscoped = allCommands().filter((c: any) => !c.scoped)
+    const unscopedBinds = unscoped.map((c: any) => c.bind)
+    expect(unscopedBinds).not.toContain("up")
+    expect(unscopedBinds).not.toContain("down")
+    expect(unscopedBinds).not.toContain("enter")
   })
 
-  itRender("binds no keys in the host's input mode", async () => {
+  itRender("binds no keys outside the tree's focus scope", async () => {
     const { default: mod } = await load()
-    const { context, allCommands } = createMockContext()
+    const { context, layers, allCommands } = createMockContext()
     await mod.setup(context)
 
-    // Every key registered outside tree mode fires while the user is typing.
+    // Keys outside the focus-scoped layer fire while the user is typing.
     // readline owns ctrl+f, ctrl+o and ctrl+t, so any of those would break the
     // prompt. The focus command must stay palette-only.
-    const inHostMode = allCommands().filter((c: any) => c.mode !== "filetree")
-    for (const command of inHostMode) {
+    for (const command of allCommands().filter((c: any) => !c.scoped)) {
       expect(command.bind).toBeUndefined()
       expect(command.slash).toBeUndefined()
     }
+    expect(layers.length).toBe(2)
   })
 
   itRender("keeps the focus command reachable in every input mode", async () => {
@@ -171,19 +182,59 @@ describe("plugin entry", () => {
     expect(first).toContain("filetree.enter-mode")
   })
 
-  itRender("pushes tree mode on focus and pops it on exit", async () => {
+  itRender("never pushes an input mode", async () => {
     const { default: mod } = await load()
     const { context, allCommands, pushed } = createMockContext()
     await mod.setup(context)
 
     const byId = (id: string) => allCommands().find((c: any) => c.id === id)!
-
     byId("filetree.enter-mode").run()
-    expect(pushed).toEqual(["filetree"])
-
     byId("filetree.exit").run()
-    byId("filetree.enter-mode").run()
-    expect(pushed).toEqual(["filetree", "filetree"])
+
+    // Pushing a mode took over the host's keyboard: afterwards no key reached
+    // anything and only clicking recovered. Navigation is scoped to the tree's
+    // own focus instead.
+    expect(pushed).toEqual([])
+  })
+
+  itRender("scopes navigation to the tree's focus rather than a mode", async () => {
+    const { default: mod } = await load()
+    const { context, layers } = createMockContext()
+    await mod.setup(context)
+
+    const tree = layers.find((l) =>
+      (l.factory().commands ?? []).some((c: any) => c.id === "filetree.up"),
+    )
+    expect(tree).toBeDefined()
+    // No mode: the layer must not be able to disable the host's own bindings.
+    expect(tree?.factory().mode).toBeUndefined()
+
+    // Nothing has rendered the tree yet, so the layer is inactive and unnamed.
+    expect(tree?.factory().enabled?.()).toBe(false)
+    expect(tree?.factory().target?.()).toBeNull()
+  })
+
+  itRender("activates the navigation layer once the tree takes focus", async () => {
+    const { default: mod } = await load()
+    const { context, layers, slots } = createMockContext()
+    await mod.setup(context)
+
+    const layer = layers.find((l) =>
+      (l.factory().commands ?? []).some((c: any) => c.id === "filetree.up"),
+    )!
+
+    // Render the sidebar, then render the tree element it produced. The tree's
+    // root box carries the ref callback that hands the plugin the renderable.
+    const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
+    const rootElement = treeElement.type(treeElement.props) as any
+    const root = { focused: false, focus: () => {} }
+    rootElement.props.ref(root)
+
+    expect(layer.factory().enabled?.()).toBe(false)
+
+    root.focused = true
+    expect(layer.factory().enabled?.()).toBe(true)
+    expect(layer.factory().target?.()).toBe(root)
   })
 
   itRender("navigating an empty tree does not throw", async () => {

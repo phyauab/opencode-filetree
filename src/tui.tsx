@@ -1,11 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { FileTree } from "./FileTree"
+import { FileTree, type TreeRoot } from "./FileTree"
 import { createTreeState } from "./store"
 import { createTreeCommands, spawnEditor, promptSession } from "./commands"
 import { createSignal } from "solid-js"
-
-/** Input mode the TUI switches into while the file tree owns the keyboard. */
-const TREE_MODE = "filetree"
 
 export default Plugin.define({
   id: "filetree",
@@ -19,7 +16,7 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (input) => {
         if (input.sessionID) setSessionID(input.sessionID)
-        return <FileTree state={state} context={context} />
+        return <FileTree state={state} context={context} onRoot={(root) => (treeRoot = root)} />
       },
     })
 
@@ -41,27 +38,40 @@ export default Plugin.define({
       },
     })
 
-    /** Pop handle returned when tree mode was pushed; escape calls it. */
-    let popTreeMode: (() => void) | undefined
+    /**
+     * The tree's root renderable, once the sidebar slot has rendered it.
+     * The navigation layer is scoped to it, so the keys are live only while the
+     * tree itself holds focus.
+     */
+    let treeRoot: TreeRoot | undefined
 
-    const enterTreeMode = () => {
-      popTreeMode?.()
-      popTreeMode = context.keymap.mode.push(TREE_MODE)
+    /** True while the tree owns focus. Read by the layer on every key event. */
+    const treeFocused = () => treeRoot?.focused === true
+
+    const focusTree = () => treeRoot?.focus?.()
+
+    /**
+     * Releases the tree's focus so the host resumes routing keys. Blur alone can
+     * leave the renderer holding a target that swallows input, so focus is
+     * explicitly dropped from the renderer too.
+     */
+    const blurTree = () => {
+      treeRoot?.blur?.()
+      const renderer = context.renderer as unknown as {
+        focusedRenderable?: { blur?: () => void }
+        requestFocus?: (target: unknown) => void
+      }
+      renderer.focusedRenderable?.blur?.()
+      renderer.requestFocus?.(null)
     }
 
-    const exitTreeMode = () => {
-      popTreeMode?.()
-      popTreeMode = undefined
-    }
-
-    // Nothing is bound with a key here: any binding registered for the host's
-    // own mode fires while the user is typing, and readline already owns ctrl+f,
-    // ctrl+o and ctrl+t. A key can still be bound to the command by id in
-    // tui.json under "keybinds".
+    // Focus the tree. No key is bound: any binding in the host's own mode fires
+    // while the user is typing, and readline already owns ctrl+f, ctrl+o and
+    // ctrl+t. A key can still be bound to this command by id in tui.json under
+    // "keybinds".
     //
-    // mode "global" opts out of mode gating. A layer without it defaults to
-    // "base", which left the focus command unreachable whenever the TUI was in
-    // any other input mode (the diff view, for one).
+    // mode "global" opts out of mode gating, so the command is listed whatever
+    // the TUI is doing.
     //
     // This layer registers before the tree layer on purpose. `keymap.layer`
     // throws synchronously on a command-shape error, and the throw aborts setup,
@@ -75,17 +85,20 @@ export default Plugin.define({
           title: "File tree: focus",
           group: "File tree",
           palette: true,
-          run: enterTreeMode,
+          run: focusTree,
         },
       ],
     }))
 
-    // Tree navigation owns the keyboard only while the TUI is in tree mode, so
-    // arrow keys and enter keep working in the prompt. Command ids must be
-    // unique within a layer.
+    // Tree navigation is scoped to the tree's own renderable, so these keys are
+    // live only while the tree has focus. Nothing global is taken over and no
+    // input mode is pushed: an earlier version pushed a mode, which left the
+    // TUI unable to route any key at all until the user clicked something.
+//
+// Command ids must be unique within a layer.
     context.keymap.layer(() => ({
-      mode: TREE_MODE,
-      priority: 10,
+      target: () => (treeFocused() ? (treeRoot as never) : null),
+      enabled: treeFocused,
       commands: [
         { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => commands.move(-1) },
         { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => commands.move(1) },
@@ -107,7 +120,14 @@ export default Plugin.define({
           run: () => commands.send(),
         },
         { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: commands.refresh },
-        { id: "filetree.exit", title: "File tree: exit", bind: "escape", run: () => exitTreeMode() },
+        {
+          id: "filetree.exit",
+          title: "File tree: exit",
+          bind: "escape",
+          // Hand focus back to the host rather than popping a mode, so the
+          // prompt gets its keys again on the very next press.
+          run: () => blurTree(),
+        },
       ],
     }))
 
@@ -124,7 +144,7 @@ export default Plugin.define({
     }
 
     return () => {
-      popTreeMode?.()
+      treeRoot = undefined
       unregisterSlot()
     }
   },
