@@ -5,7 +5,7 @@ import { computeVisibleNodes } from "./treeLogic"
 import { loadDirSync, applyResult } from "./loader"
 import { heightForTerminal, DEFAULT_TERMINAL_HEIGHT } from "./viewport"
 import { layoutKey } from "./persist"
-import { restorePaths, persistPaths, shouldRestore, isRestorable } from "./layoutSync"
+import { restorePaths, persistPaths, shouldRestore, restorablePaths } from "./layoutSync"
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
@@ -82,7 +82,12 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     const entries = state.entries()
     if (!shouldRestore(expandedLayout, state.expanded(), entries.length > 0)) return
 
-    const restorable = restorePaths(expandedLayout).filter((path) => isRestorable(path, entries))
+    const root = untrack(() => resolveDirectory(context))
+    if (!root) return
+
+    // Only restore directories that exist in this project's root. Anything
+    // else is stale or belongs to a different tree.
+    const restorable = restorablePaths(restorePaths(expandedLayout), entries, root)
     state.setExpanded(new Set(restorable))
   })
 

@@ -31,9 +31,32 @@ export function shouldRestore(
 }
 
 /**
- * True when a path in the restored layout is not a directory in the tree's
- * root. Such a path cannot be expanded, so it should not be restored.
+ * True when a path in the restored layout is a directory in the tree's root.
+ * Such a path can be expanded, so it should be restored.
  */
 export function isRestorable(path: string, rootEntries: DirEntry[]): boolean {
   return rootEntries.some((entry) => entry.path === path && entry.isDirectory)
+}
+
+/**
+ * True when `path` lies inside `root`. Persisted layouts are keyed by project,
+ * but a stale entry can still point elsewhere; restoring it would expand a
+ * directory outside the project.
+ */
+export function isInsideRoot(path: string, root: string): boolean {
+  const separator = root.includes("\\") ? "\\" : "/"
+  const normalizedRoot = root.endsWith(separator) ? root.slice(0, -1) : root
+  return path.startsWith(normalizedRoot + separator)
+}
+
+/**
+ * Keeps only paths that are directories in the tree's root *and* inside it.
+ * Anything else is stale, from another project, or from a previous layout.
+ */
+export function restorablePaths(
+  paths: string[],
+  rootEntries: DirEntry[],
+  root: string,
+): string[] {
+  return paths.filter((path) => isInsideRoot(path, root) && isRestorable(path, rootEntries))
 }
