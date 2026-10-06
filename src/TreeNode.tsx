@@ -16,12 +16,18 @@ export function TreeNode(props: TreeNodeProps) {
   const git = getGitStatusIndicator(props.gitStatus)
   const described = props.gitStatus ? ` ${describeGitStatus(props.gitStatus)}` : ""
 
+  // The cursor is a character in the text, not a background colour. `bg` on a
+  // <text> does not repaint when the selection moves: state updated correctly
+  // but the row looked unchanged until something else forced a redraw. Text
+  // content always repaints, so the marker cannot go stale.
+  const marker = props.isSelected ? "› " : "  "
+
   // A single text node with string children. OpenTUI's TextNodeRenderable
   // accepts only strings, TextNodeRenderables, or StyledText, so a nested
   // <text> element here throws.
   return (
-    <text bg={props.isSelected ? "blue" : undefined}>
-      {`${indent}${chevron}${icon} ${props.entry.name}${git}${described}`}
+    <text fg={props.isSelected ? "cyan" : undefined} bg={props.isSelected ? "blue" : undefined}>
+      {`${marker}${indent}${chevron}${icon} ${props.entry.name}${git}${described}`}
     </text>
   )
 }

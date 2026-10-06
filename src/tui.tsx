@@ -42,6 +42,10 @@ export default Plugin.define({
       setExpanded: state.setExpanded,
       clampCursor: state.clampCursor,
       reload: state.reload,
+      repaint: () => {
+        const r = context.renderer as unknown as { requestRender?: () => void }
+        r.requestRender?.()
+      },
       openInEditor: spawnEditor,
       sendToSession: (entry) => {
         void promptSession(context.client, sessionID(), entry).then((result) => {

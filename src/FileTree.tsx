@@ -190,9 +190,13 @@ export const FileTree: Component<FileTreeProps> = (props) => {
 
   // The tree can shrink under the cursor (collapse, or deleted files).
   createEffect(() => {
-    state.visibleNodes().length
-    state.cursor()
+    const length = state.visibleNodes().length
+    const cursor = state.cursor()
     state.clampCursor()
+    // Solid delivers the signal to this effect, but the renderer was not
+    // painting the updated rows. Ask for a frame explicitly.
+    ;(context.renderer as unknown as { requestRender?: () => void }).requestRender?.()
+    trace("clamp", { length, cursor, after: state.cursor() })
   })
 
   // The window is sized from the renderer on the plugin context, since the
