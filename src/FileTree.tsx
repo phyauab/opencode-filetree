@@ -41,9 +41,9 @@ export function toggleExpand(path: string, expanded: Set<string>): Set<string> {
 
 type FileTreeProps = {
   cursor?: () => number
-  setCursor?: (fn: (c: number) => number) => void
+  setCursor?: (fn: ((c: number) => number) | number) => void
   expanded?: () => Set<string>
-  setExpanded?: (fn: (prev: Set<string>) => Set<string>) => void
+  setExpanded?: (fn: ((prev: Set<string>) => Set<string>) | Set<string>) => void
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
