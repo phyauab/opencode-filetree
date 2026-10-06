@@ -134,6 +134,19 @@ describe("plugin entry", () => {
     }
   })
 
+  itRender("keeps the focus command reachable in every input mode", async () => {
+    const { default: mod } = await load()
+    const { context, layers } = createMockContext()
+    await mod.setup(context)
+
+    // A layer with no mode defaults to "base", so the palette only offered the
+    // focus command while the TUI sat in its base mode. It must be global.
+    const focus = layers.find((l) =>
+      (l.factory().commands ?? []).some((c: any) => c.id === "filetree.enter-mode"),
+    )
+    expect(focus?.factory().mode).toBe("global")
+  })
+
   itRender("never registers the same command id twice in one layer", async () => {
     const { default: mod } = await load()
     const { context, layers } = createMockContext()

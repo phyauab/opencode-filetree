@@ -54,17 +54,21 @@ export default Plugin.define({
       popTreeMode = undefined
     }
 
-    // Nothing is bound in the host's input mode. Every key registered there fires
-    // while the user is typing, and readline already owns ctrl+f, ctrl+o and
-    // ctrl+t, so any default binding interferes with the prompt. The focus
-    // command is reachable from the command palette, and a key can be bound to
-    // it in tui.json under "keybinds" if the user wants one.
+    // Nothing is bound with a key here: any binding registered for the host's
+    // own mode fires while the user is typing, and readline already owns ctrl+f,
+    // ctrl+o and ctrl+t. A key can still be bound to the command by id in
+    // tui.json under "keybinds".
+    //
+    // mode "global" opts out of mode gating. A layer without it defaults to
+    // "base", which left the focus command unreachable whenever the TUI was in
+    // any other input mode (the diff view, for one).
     //
     // This layer registers before the tree layer on purpose. `keymap.layer`
     // throws synchronously on a command-shape error, and the throw aborts setup,
     // so anything registered later would never exist. A duplicate command id
     // once did exactly that: the tree rendered with no working keys at all.
     context.keymap.layer(() => ({
+      mode: "global",
       commands: [
         {
           id: "filetree.enter-mode",
@@ -106,6 +110,18 @@ export default Plugin.define({
         { id: "filetree.exit", title: "File tree: exit", bind: "escape", run: () => exitTreeMode() },
       ],
     }))
+
+    // Diagnostics: what did the host actually register? The plugin runs inside the
+    // host process, so this is the only way to see the real reachable set
+    // rather than inferring it from the outside. Set `debug: true` in
+    // opencode.json to see it.
+    if (context.options?.debug) {
+      const reachable = context.keymap
+        .commands()
+        .filter((c) => c.id?.startsWith("filetree."))
+        .map((c) => c.id)
+      notify(`ft debug: mode=${context.keymap.mode.current()} [${reachable.join(" ")}]`, "info")
+    }
 
     return () => {
       popTreeMode?.()
