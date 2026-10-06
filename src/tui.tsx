@@ -48,21 +48,26 @@ export default Plugin.define({
     /** True while the tree owns focus. Read by the layer on every key event. */
     const treeFocused = () => treeRoot?.focused === true
 
-    const focusTree = () => treeRoot?.focus?.()
+    const focusTree = () => {
+      if (!treeRoot) return
+      // The renderer's own focus API, not Renderable.focus(): the renderer
+      // tracks which renderable holds focus and routes keys to it, so focusing
+      // through the renderable alone leaves the renderer's view unchanged.
+      ;(context.renderer as unknown as {
+        focusRenderable?: (r: unknown) => void
+      }).focusRenderable?.(treeRoot)
+    }
 
     /**
-     * Releases the tree's focus so the host resumes routing keys. Blur alone can
-     * leave the renderer holding a target that swallows input, so focus is
-     * explicitly dropped from the renderer too.
+     * Releases the tree's focus so the host resumes routing keys. Focusing null
+     * is not supported, so the previous owner is restored explicitly when the
+     * tree had focus.
      */
     const blurTree = () => {
-      treeRoot?.blur?.()
-      const renderer = context.renderer as unknown as {
-        focusedRenderable?: { blur?: () => void }
-        requestFocus?: (target: unknown) => void
-      }
-      renderer.focusedRenderable?.blur?.()
-      renderer.requestFocus?.(null)
+      if (!treeRoot) return
+      ;(context.renderer as unknown as {
+        blurRenderable?: (r: unknown) => void
+      }).blurRenderable?.(treeRoot)
     }
 
     // Focus the tree. No key is bound: any binding in the host's own mode fires
@@ -136,11 +141,28 @@ export default Plugin.define({
     // rather than inferring it from the outside. Set `debug: true` in
     // opencode.json to see it.
     if (context.options?.debug) {
-      const reachable = context.keymap
+      const ids = context.keymap
         .commands()
         .filter((c) => c.id?.startsWith("filetree."))
         .map((c) => c.id)
-      notify(`ft debug: mode=${context.keymap.mode.current()} [${reachable.join(" ")}]`, "info")
+      const renderer = context.renderer as unknown as {
+        currentFocusedRenderable?: { id?: string; focused?: boolean }
+        focusRenderable?: unknown
+        blurRenderable?: unknown
+      }
+      notify(
+        [
+          `ft debug:`,
+          `mode=${context.keymap.mode.current()}`,
+          `root=${treeRoot ? "yes" : "no"}`,
+          `focused=${treeFocused()}`,
+          `focusApi=${renderer.focusRenderable ? "focusRenderable" : "MISSING"}`,
+          `blurApi=${renderer.blurRenderable ? "blurRenderable" : "MISSING"}`,
+          `hostFocus=${renderer.currentFocusedRenderable?.id ?? "none"}`,
+          `cmds=[${ids.join(" ")}]`,
+        ].join(" "),
+        "info",
+      )
     }
 
     return () => {

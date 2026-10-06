@@ -230,7 +230,14 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       focusable
       // Clicking the tree focuses it, which is what makes the scoped keymap
       // layer reachable. No mode is pushed, so the host keeps its own keys.
-      onMouseDown={() => rootRef?.focus?.()}
+      // Focus goes through the renderer, which is what tracks the focused
+      // renderable and routes keys to it.
+      onMouseDown={() => {
+        const renderer = props.context.renderer as unknown as {
+          focusRenderable?: (r: unknown) => void
+        }
+        renderer.focusRenderable?.(rootRef)
+      }}
       ref={(root: TreeRoot) => {
         rootRef = root
         props.onRoot?.(root)

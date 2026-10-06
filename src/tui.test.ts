@@ -15,6 +15,9 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
   const prompts: any[] = []
   const toasts: any[] = []
   const pushed: string[] = []
+  /** Renderables passed to the renderer's focus and blur APIs. */
+  const focusedRenders: unknown[] = []
+  const blurred: unknown[] = []
 
   const context: any = {
     options: {},
@@ -55,7 +58,11 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
     data: { on: () => () => {}, listen: () => {} },
     theme: {},
-    renderer: {},
+    renderer: {
+      focusRenderable: (r: unknown) => focusedRenders.push(r),
+      blurRenderable: (r: unknown) => blurred.push(r),
+      currentFocusedRenderable: null,
+    },
   }
 
   const allCommands = () =>
@@ -74,7 +81,18 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
       return (layer.commands ?? []).map((c: any) => c)
     })
 
-  return { context, slots, layers, prompts, toasts, pushed, allCommands, layersScoped }
+  return {
+    context,
+    slots,
+    layers,
+    prompts,
+    toasts,
+    pushed,
+    focusedRenders,
+    blurred,
+    allCommands,
+    layersScoped,
+  }
 }
 
 describe("plugin entry", () => {
@@ -180,6 +198,27 @@ describe("plugin entry", () => {
     // otherwise there is no way back into the tree.
     const first = (layers[0].factory().commands ?? []).map((c: any) => c.id)
     expect(first).toContain("filetree.enter-mode")
+  })
+
+  itRender("focuses and blurs through the renderer's focus API", async () => {
+    const { default: mod } = await load()
+    const { context, allCommands, slots, focusedRenders, blurred } = createMockContext()
+    await mod.setup(context)
+
+    // The renderer tracks which renderable holds focus and routes keys to it.
+    // Calling Renderable.focus() alone leaves that view unchanged, so the tree
+    // never became reachable.
+    const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
+    const rootElement = treeElement.type(treeElement.props) as any
+    const root = { focused: false, focus: () => {}, blur: () => {} }
+    rootElement.props.ref(root)
+
+    const byId = (id: string) => allCommands().find((c: any) => c.id === id)!
+    byId("filetree.enter-mode").run()
+    expect(focusedRenders).toEqual([root])
+
+    byId("filetree.exit").run()
+    expect(blurred).toEqual([root])
   })
 
   itRender("never pushes an input mode", async () => {
