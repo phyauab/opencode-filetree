@@ -36,6 +36,24 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const [reloadToken, setReloadToken] = createSignal(0)
   const [empty, setEmpty] = createSignal<EmptyReason>({ kind: "loading" })
 
+  // The directory is read once, in the component body, rather than in an
+  // effect: the host's renderer does not guarantee effect scheduling, and the
+  // initial read must not depend on it.
+  const directory = resolveDirectory(context)
+  if (!directory) {
+    setEmpty({ kind: "no-location" })
+  } else {
+    void loadDir(readDir, directory).then((result) => {
+      if (result.ok) {
+        state.setEntries(result.entries)
+        setEmpty({ kind: "empty" })
+      } else {
+        state.setEntries([])
+        setEmpty({ kind: "unreadable", reason: result.reason })
+      }
+    })
+  }
+
   const reload = () => {
     state.setEntries([])
     state.setChildrenMap(new Map())
@@ -74,7 +92,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     })
   })
 
-  // Read the project root and watch it for changes.
+  // Watch the project root for changes and re-read on demand.
   createEffect(() => {
     reloadToken()
 
@@ -82,12 +100,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     // publishes on every session event, so subscribing to it re-runs this
     // effect constantly and the tree never leaves its loading state.
     const dir = untrack(() => resolveDirectory(context))
-    if (!dir) {
-      setEmpty({ kind: "no-location" })
-      return
-    }
-
-    setEmpty({ kind: "loading" })
+    if (!dir) return
 
     const reloadEntries = () => {
       void loadDir(readDir, dir).then((result) => {
@@ -182,7 +195,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     for (let i = view.start; i < Math.min(view.end, nodes.length); i++) {
       slice.push({ node: nodes[i], index: i })
     }
-    return { slice, failures, total: nodes.length, view, reason: empty() }
+    return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
 
   return (
@@ -191,7 +204,12 @@ export const FileTree: Component<FileTreeProps> = (props) => {
         when={rows().total > 0}
         fallback={
           <text fg="dim">
-            {describeEmpty(rows().reason, rows().total, state.viewportHeight())}
+            {describeEmpty(
+              rows().reason,
+              rows().total,
+              state.viewportHeight(),
+              rows().directory,
+            )}
           </text>
         }
       >

@@ -15,12 +15,14 @@ export function describeEmpty(
   reason: EmptyReason,
   rows: number,
   viewportHeight: number,
+  directory?: string,
 ): string {
-  if (reason.kind === "no-location") return "no project directory"
-  if (reason.kind === "loading") return "loading..."
-  if (reason.kind === "unreadable") return `unreadable: ${reason.reason}`
+  const where = directory ? `(${directory})` : ""
+  if (reason.kind === "no-location") return `no project directory${where}`
+  if (reason.kind === "loading") return where ? `loading ${where}` : "loading..."
+  if (reason.kind === "unreadable") return where ? `unreadable: ${reason.reason} ${where}` : `unreadable: ${reason.reason}`
   if (rows > 0 && viewportHeight < 1) return "panel too short"
-  return "no files"
+  return where ? `no files ${where}` : "no files"
 }
 
 /** The slice of the plugin context this module needs. */

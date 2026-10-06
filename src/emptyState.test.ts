@@ -48,4 +48,13 @@ describe("describeEmpty", () => {
   it("distinguishes a panel too short to show rows", () => {
     expect(describeEmpty({ kind: "empty" }, 3, 0)).toBe("panel too short")
   })
+
+  it("includes the resolved directory so a stuck tree is diagnosable", () => {
+    expect(describeEmpty({ kind: "loading" }, 0, 20, "C:/proj")).toBe("loading (C:/proj)")
+    expect(describeEmpty({ kind: "empty" }, 0, 20, "C:/proj")).toBe("no files (C:/proj)")
+  })
+
+  it("omits the directory when there is none", () => {
+    expect(describeEmpty({ kind: "no-location" }, 0, 20, undefined)).toBe("no project directory")
+  })
 })
