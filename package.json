@@ -1,0 +1,20 @@
+{
+  "name": "opencode-filetree",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/tui.ts",
+    "./tui": "./src/tui.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "latest"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}
