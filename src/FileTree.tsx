@@ -1,5 +1,4 @@
 import { createEffect, onCleanup, createSignal, For, Show, type Component } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
 import { readDir, watch, isGitRepo, getGitStatus, type DirEntry } from "./fileSystem"
 import { loadDir, applyResult } from "./loader"
@@ -52,6 +51,15 @@ const SIDEBAR_CHROME_ROWS = 14
 
 /** Fraction of the free terminal height the tree may use. */
 const SIDEBAR_HEIGHT_SHARE = 0.6
+
+/** Used when the renderer reports no height. */
+const DEFAULT_TERMINAL_HEIGHT = 40
+
+/** Rows the tree renders for a given available height. */
+export function viewportHeightFor(availableHeight: number, share: number): number {
+  if (!Number.isFinite(availableHeight) || !Number.isFinite(share)) return 1
+  return Math.max(1, Math.floor(Math.max(0, availableHeight) * share))
+}
 
 type FileTreeProps = {
   state: TreeState
@@ -168,13 +176,38 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     state.clampCursor()
   })
 
-  // The window is sized from the terminal, since the sidebar slot reports no
-  // dimensions of its own. Leaving room for the sidebar's other content and the
-  // "more above/below" hints keeps the last tree row visible.
-  const dimensions = useTerminalDimensions()
+  // The window is sized from the renderer on the plugin context, since the
+  // sidebar slot reports no dimensions of its own. Reading the renderer
+  // directly avoids `useTerminalDimensions`, which resolves a Solid context
+  // from this package's own copy of @opentui/solid rather than the host's.
+  // Leaving room for the sidebar's other content and the "more above/below"
+  // hints keeps the last tree row visible.
+  const [terminalHeight, setTerminalHeight] = createSignal(
+    context.renderer?.height ?? DEFAULT_TERMINAL_HEIGHT,
+  )
+
   createEffect(() => {
-    const available = dimensions().height - SIDEBAR_CHROME_ROWS
-    state.setViewportHeight(Math.max(1, Math.floor(available * SIDEBAR_HEIGHT_SHARE)))
+    const renderer = context.renderer
+    if (!renderer) return
+
+    const measure = () => {
+      const next = renderer.height
+      if (typeof next === "number" && next > 0) setTerminalHeight(next)
+    }
+    measure()
+
+    renderer.on?.("resize", measure)
+    onCleanup(() => renderer.off?.("resize", measure))
+
+    state.setViewportHeight(
+      viewportHeightFor(terminalHeight() - SIDEBAR_CHROME_ROWS, SIDEBAR_HEIGHT_SHARE),
+    )
+  })
+
+  createEffect(() => {
+    state.setViewportHeight(
+      viewportHeightFor(terminalHeight() - SIDEBAR_CHROME_ROWS, SIDEBAR_HEIGHT_SHARE),
+    )
   })
 
   // Rows are windowed to the panel height, so a tree with thousands of entries
