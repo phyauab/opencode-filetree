@@ -1,18 +1,31 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { FileTree, moveCursor, toggleExpand } from "./FileTree"
+import { createTreeState } from "./store"
+import { spawn } from "node:child_process"
 import { createSignal } from "solid-js"
+import type { DirEntry } from "./fileSystem"
 
 export default Plugin.define({
   id: "filetree",
   setup(context) {
-    const [cursor, setCursor] = createSignal(0)
-    const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
+    const state = createTreeState()
+    const [sessionID, setSessionID] = createSignal<string>("")
 
     // Register sidebar slot
     context.ui.slot({
       append: "sidebar.content",
-      render: () => <FileTree cursor={cursor} setCursor={setCursor} expanded={expanded} setExpanded={setExpanded} />,
+      render: ({ sessionID: sid }) => {
+        if (sid) setSessionID(sid)
+        return <FileTree state={state} />
+      },
     })
+
+    // Helper: get the entry at the current cursor position
+    const getSelectedEntry = () => {
+      const nodes = state.visibleNodes()
+      const idx = state.cursor()
+      return idx >= 0 && idx < nodes.length ? nodes[idx].entry : undefined
+    }
 
     // Register keymap for navigation
     context.keymap.layer(() => ({
@@ -23,7 +36,7 @@ export default Plugin.define({
           title: "Move up",
           bind: "up",
           run: () => {
-            setCursor((c) => moveCursor(c, -1, 1000))
+            state.setCursor((c) => moveCursor(c, -1, state.visibleNodes().length))
           },
         },
         {
@@ -31,7 +44,7 @@ export default Plugin.define({
           title: "Move down",
           bind: "down",
           run: () => {
-            setCursor((c) => moveCursor(c, 1, 1000))
+            state.setCursor((c) => moveCursor(c, 1, state.visibleNodes().length))
           },
         },
         {
@@ -39,7 +52,10 @@ export default Plugin.define({
           title: "Expand folder",
           bind: "right",
           run: () => {
-            // TODO: expand folder at cursor
+            const entry = getSelectedEntry()
+            if (entry?.isDirectory) {
+              state.setExpanded((prev) => toggleExpand(entry.path, prev))
+            }
           },
         },
         {
@@ -47,7 +63,10 @@ export default Plugin.define({
           title: "Collapse folder",
           bind: "left",
           run: () => {
-            // TODO: collapse folder at cursor
+            const entry = getSelectedEntry()
+            if (entry?.isDirectory) {
+              state.setExpanded((prev) => toggleExpand(entry.path, prev))
+            }
           },
         },
         {
@@ -55,7 +74,13 @@ export default Plugin.define({
           title: "Open file in editor",
           bind: "enter",
           run: () => {
-            // TODO: open file at cursor in $EDITOR
+            const entry = getSelectedEntry()
+            if (entry && !entry.isDirectory) {
+              const editor = process.env.EDITOR || "code"
+              spawn(editor, [entry.path], { detached: true, stdio: "ignore" }).unref()
+            } else if (entry?.isDirectory) {
+              state.setExpanded((prev) => toggleExpand(entry.path, prev))
+            }
           },
         },
         {
@@ -63,7 +88,13 @@ export default Plugin.define({
           title: "Send file to session",
           bind: "ctrl+o",
           run: () => {
-            // TODO: send file path to session
+            const entry = getSelectedEntry()
+            if (entry && sessionID()) {
+              context.client.session.prompt({
+                sessionID: sessionID(),
+                text: `Read ${entry.path}`,
+              })
+            }
           },
         },
         {
@@ -71,7 +102,12 @@ export default Plugin.define({
           title: "Refresh tree",
           bind: "r",
           run: () => {
-            // TODO: refresh tree
+            const dir = context.location?.directory
+            if (dir) {
+              state.setEntries([])
+              state.setExpanded(new Set<string>())
+              state.setChildrenMap(new Map<string, DirEntry[]>())
+            }
           },
         },
       ],

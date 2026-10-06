@@ -1,7 +1,8 @@
-import { createSignal, createEffect, onCleanup, For, type Component } from "solid-js"
+import { createEffect, onCleanup, For, type Component } from "solid-js"
 import { usePlugin } from "@opencode/plugin/tui"
 import { readDir, watch, isGitRepo, getGitStatus, type DirEntry } from "./fileSystem"
 import { TreeNode } from "./TreeNode"
+import type { TreeState } from "./store"
 
 // --- Pure navigation logic (exported for testing) ---
 
@@ -40,42 +41,30 @@ export function toggleExpand(path: string, expanded: Set<string>): Set<string> {
 // --- Component ---
 
 type FileTreeProps = {
-  cursor?: () => number
-  setCursor?: (fn: ((c: number) => number) | number) => void
-  expanded?: () => Set<string>
-  setExpanded?: (fn: ((prev: Set<string>) => Set<string>) | Set<string>) => void
+  state: TreeState
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
   const context = usePlugin()
-  const [entries, setEntries] = createSignal<DirEntry[]>([])
-  const [childrenMap, setChildrenMap] = createSignal<Map<string, DirEntry[]>>(new Map())
-  const [localExpanded, setLocalExpanded] = createSignal<Set<string>>(new Set())
-  const [localCursor, setLocalCursor] = createSignal(0)
-  const [gitStatusMap, setGitStatusMap] = createSignal<Map<string, string>>(new Map())
-
-  const expanded = props.expanded ?? localExpanded
-  const setExpanded = props.setExpanded ?? setLocalExpanded
-  const cursor = props.cursor ?? localCursor
-  const setCursor = props.setCursor ?? setLocalCursor
+  const state = props.state
 
   createEffect(() => {
     const dir = context.location?.directory
     if (!dir) return
 
     readDir(dir).then((result) => {
-      setEntries(result)
-      setExpanded(new Set([dir]))
+      state.setEntries(result)
+      state.setExpanded(new Set([dir]))
     })
 
     isGitRepo(dir).then((isGit) => {
-      if (isGit) getGitStatus(dir).then(setGitStatusMap)
+      if (isGit) getGitStatus(dir).then(state.setGitStatusMap)
     })
 
     const unwatch = watch(dir, () => {
-      readDir(dir).then(setEntries)
+      readDir(dir).then(state.setEntries)
       isGitRepo(dir).then((isGit) => {
-        if (isGit) getGitStatus(dir).then(setGitStatusMap)
+        if (isGit) getGitStatus(dir).then(state.setGitStatusMap)
       })
     })
 
@@ -83,11 +72,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   })
 
   createEffect(() => {
-    const currentExpanded = expanded()
+    const currentExpanded = state.expanded()
     for (const path of currentExpanded) {
-      if (!childrenMap().has(path)) {
+      if (!state.childrenMap().has(path)) {
         readDir(path).then((children) => {
-          setChildrenMap((prev) => {
+          state.setChildrenMap((prev) => {
             const next = new Map(prev)
             next.set(path, children)
             return next
@@ -97,18 +86,16 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     }
   })
 
-  const visibleNodes = () => computeVisibleNodes(entries(), expanded(), childrenMap())
-
   return (
     <box>
-      <For each={visibleNodes()}>
+      <For each={state.visibleNodes()}>
         {(node, index) => (
           <TreeNode
             entry={node.entry}
             depth={node.depth}
-            isSelected={index() === cursor()}
-            isExpanded={expanded().has(node.entry.path)}
-            gitStatus={gitStatusMap().get(node.entry.path)}
+            isSelected={index() === state.cursor()}
+            isExpanded={state.expanded().has(node.entry.path)}
+            gitStatus={state.gitStatusMap().get(node.entry.path)}
           />
         )}
       </For>
