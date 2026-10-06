@@ -211,16 +211,23 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   /**
-   * Handles a click on a row: select it, and expand or collapse a folder.
+   * Handles a click anywhere in the tree: selects the clicked row, and expands
+   * or collapses a folder.
    *
-   * Mouse input is the whole interaction. Keyboard navigation was removed after
-   * the host proved not to repaint plugin rows in response to keymap commands:
-   * the state updated correctly (verified in the trace) but nothing was painted.
-   * A mouse event makes the host render a frame, so clicks are reliable.
+   * The row is derived from the click's Y rather than from a handler per row.
+   * Per-row handlers on inner boxes received nothing: only the root box is in the
+   * host's hit grid, which is why clicking it always worked. MouseEvent.y is
+   * relative to the renderable it was dispatched on, so rows start at y 0.
    */
-  const onRowClick = (node: (typeof state.visibleNodes extends () => infer R ? R : never)[number]) => {
-    const index = state.visibleNodes().indexOf(node)
-    if (index >= 0) state.setCursor(index)
+  const onClick = (event: { y: number }) => {
+    const nodes = state.visibleNodes()
+    const view = state.viewport()
+    const row = view.start + Math.max(0, event.y)
+    if (row >= view.end || row >= nodes.length) return
+    const node = nodes[row]
+    if (!node) return
+
+    state.setCursor(row)
     if (node.entry.isDirectory) {
       state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
     }
@@ -228,7 +235,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    <box>
+    <box onMouseDown={onClick}>
       <Show
         when={rows().total > 0}
         fallback={
@@ -243,15 +250,13 @@ export const FileTree: Component<FileTreeProps> = (props) => {
         }
       >
         {rows().slice.map(({ node, selected }) => (
-          <box onMouseDown={() => onRowClick(node)}>
-            <TreeNode
-              entry={node.entry}
-              depth={node.depth}
-              isSelected={selected}
-              isExpanded={state.expanded().has(node.entry.path)}
-              gitStatus={state.gitStatusMap().get(node.entry.path)}
-            />
-          </box>
+          <TreeNode
+            entry={node.entry}
+            depth={node.depth}
+            isSelected={selected}
+            isExpanded={state.expanded().has(node.entry.path)}
+            gitStatus={state.gitStatusMap().get(node.entry.path)}
+          />
         ))}
         <Show when={rows().view.start > 0}>
           <text fg="dim"> {rows().view.start} more above</text>
