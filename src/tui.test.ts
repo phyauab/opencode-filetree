@@ -121,12 +121,9 @@ itRender("registers no keymap commands, so the prompt keeps every key", async ()
     // delay on the way back.
     const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
     const rootElement = treeElement.type(treeElement.props) as any
-    expect(() => rootElement.props.onMouseDown({ y: 9999 })).not.toThrow()
+    expect(rootElement.props.onMouseDown).toBeUndefined()
 
     expect(pushed).toEqual([])
-    // focusable is what places the box in the host's hit grid. Without it the
-    // handler never fires at all, which is why clicking did nothing.
-    expect(rootElement.props.focusable).toBe(true)
   })
 
   itRender("clicking a row does not throw for any row in the tree", async () => {
@@ -136,11 +133,15 @@ itRender("registers no keymap commands, so the prompt keeps every key", async ()
 
     const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
     const rootElement = treeElement.type(treeElement.props) as any
-    const onMouseDown = rootElement.props.onMouseDown
-    // The row comes from the click's y against the windowed view, so every
-    // position is handled and anything past the last row is ignored.
-    for (let y = 0; y < 40; y++) {
-      expect(() => onMouseDown({ y })).not.toThrow()
+    const rowBoxes = findRowBoxes(rootElement)
+    expect(rowBoxes.length).toBeGreaterThan(0)
+
+    // Every row is its own focusable box, so the handler knows which row it is
+    // without deriving anything from the click's coordinates.
+    for (const row of rowBoxes) {
+      expect(row.props.focusable).toBe(true)
+      expect(typeof row.props.onMouseDown).toBe("function")
+      expect(() => row.props.onMouseDown()).not.toThrow()
     }
   })
 

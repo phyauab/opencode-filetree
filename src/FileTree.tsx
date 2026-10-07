@@ -211,23 +211,20 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   /**
-   * Handles a click anywhere in the tree: selects the clicked row, and expands
-   * or collapses a folder.
+   * Handles a click on a row: selects it, and expands or collapses a folder.
    *
-   * The row is derived from the click's Y rather than from a handler per row.
-   * Per-row handlers on inner boxes received nothing: only the root box is in the
-   * host's hit grid, which is why clicking it always worked. MouseEvent.y is
-   * relative to the renderable it was dispatched on, so rows start at y 0.
+   * The row is passed in rather than derived from the click's coordinates. A
+   * coordinate-based handler silently did nothing: MouseEvent.y is not relative
+   * to the target in the way that assumed, so every click fell outside the
+   * window and returned early. Each row is its own focusable box so the handler
+   * knows exactly which row it belongs to, with no arithmetic to get wrong.
    */
-  const onClick = (event: { y: number }) => {
+  const onRowClick = (index: number) => {
     const nodes = state.visibleNodes()
-    const view = state.viewport()
-    const row = view.start + Math.max(0, event.y)
-    if (row >= view.end || row >= nodes.length) return
-    const node = nodes[row]
+    const node = nodes[index]
     if (!node) return
 
-    state.setCursor(row)
+    state.setCursor(index)
     if (node.entry.isDirectory) {
       state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
     }
@@ -235,10 +232,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    // focusable is what puts the box in the host's hit grid: with it, clicks
-    // arrive; without it, onMouseDown never fires. It is inert otherwise, since
-    // no keymap layer is registered to route keys here.
-    <box focusable onMouseDown={onClick}>
+    <box>
       <Show
         when={rows().total > 0}
         fallback={
@@ -252,14 +246,19 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           </text>
         }
       >
-        {rows().slice.map(({ node, selected }) => (
-          <TreeNode
-            entry={node.entry}
-            depth={node.depth}
-            isSelected={selected}
-            isExpanded={state.expanded().has(node.entry.path)}
-            gitStatus={state.gitStatusMap().get(node.entry.path)}
-          />
+        {rows().slice.map(({ node, index, selected }) => (
+          // focusable is what puts a renderable in the host's hit grid, so a
+          // plain box receives no clicks at all. It is inert otherwise, since no
+          // keymap layer routes keys here.
+          <box focusable onMouseDown={() => onRowClick(index)}>
+            <TreeNode
+              entry={node.entry}
+              depth={node.depth}
+              isSelected={selected}
+              isExpanded={state.expanded().has(node.entry.path)}
+              gitStatus={state.gitStatusMap().get(node.entry.path)}
+            />
+          </box>
         ))}
         <Show when={rows().view.start > 0}>
           <text fg="dim"> {rows().view.start} more above</text>
