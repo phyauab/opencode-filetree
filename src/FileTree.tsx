@@ -1,7 +1,7 @@
 import { createEffect, onCleanup, createSignal, untrack, Show, type Component } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
 import { readDirSync, watch, getGitStatusSync } from "./fileSystem"
-import { computeVisibleNodes } from "./treeLogic"
+import { computeVisibleNodes, type VisibleNode } from "./treeLogic"
 import { loadDirSync, applyResult } from "./loader"
 import { heightForTerminal, DEFAULT_TERMINAL_HEIGHT } from "./viewport"
 import { layoutKey } from "./persist"
@@ -212,6 +212,19 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
 
+  /**
+ * A fresh object whenever anything visible changes, used as the key for the row
+ * list. Reading the signals here is what makes the memo recompute.
+ */
+  const snapshot = () => ({
+    rows: rows().slice,
+    failures: rows().failures,
+    expanded: state.expanded(),
+    gitStatus: state.gitStatusMap(),
+    total: rows().total,
+    view: rows().view,
+  })
+
   /** Selects a row by index, ignoring positions outside the tree. */
   const select = (index: number) => {
     const nodes = state.visibleNodes()
@@ -238,22 +251,57 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           </text>
         }
       >
-        {rows().slice.map(({ node, selected }) => (
-          <TreeNode
-            entry={node.entry}
-            depth={node.depth}
-            isSelected={selected}
-            isExpanded={state.expanded().has(node.entry.path)}
-            gitStatus={state.gitStatusMap().get(node.entry.path)}
-          />
-        ))}
-        <Show when={rows().view.start > 0}>
-          <text fg="dim"> {rows().view.start} more above</text>
-        </Show>
-        <Show when={rows().view.end < rows().total}>
-          <text fg="dim"> {rows().total - rows().view.end} more below</text>
+        {/* Remounted whenever the tree changes. The host updates renderables but
+            does not repaint plugin components in place, so an update left the
+            panel showing stale rows until something forced a mount; closing and
+            reopening the panel did exactly that. Keying on a fresh snapshot
+            makes the change land the same way. */}
+        <Show when={snapshot()} keyed>
+          {(snap) => (
+            <TreeRows
+              rows={snap.rows}
+              failures={snap.failures}
+              expanded={snap.expanded}
+              gitStatus={snap.gitStatus}
+              total={snap.total}
+              view={snap.view}
+              viewportHeight={state.viewportHeight()}
+            />
+          )}
         </Show>
       </Show>
     </box>
   )
 }
+
+/** The rows, isolated so they can be remounted as a unit. */
+const TreeRows: Component<{
+  rows: { node: VisibleNode; selected: boolean }[]
+  failures: Map<string, string>
+  expanded: Set<string>
+  gitStatus: Map<string, string>
+  total: number
+  view: { start: number; end: number }
+  viewportHeight: number
+}> = (props) => (
+  <>
+    {props.rows.map(({ node, selected }) => (
+      <TreeNode
+        entry={node.entry}
+        depth={node.depth}
+        isSelected={selected}
+        isExpanded={props.expanded.has(node.entry.path)}
+        gitStatus={props.gitStatus.get(node.entry.path)}
+      />
+    ))}
+    <Show when={props.failures.size > 0}>
+      <text fg="dim"> {props.failures.size} folder(s) unreadable</text>
+    </Show>
+    <Show when={props.view.start > 0}>
+      <text fg="dim"> {props.view.start} more above</text>
+    </Show>
+    <Show when={props.view.end < props.total}>
+      <text fg="dim"> {props.total - props.view.end} more below</text>
+    </Show>
+  </>
+)
