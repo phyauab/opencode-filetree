@@ -201,7 +201,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   // memos, and in this host those did not repaint when the cursor moved: state
   // updated and the surrounding Show did repaint, but the rows did not.
   const rows = () => {
-    const cursor = state.cursor()
+    const cursor = state.live.cursor
     const nodes = state.visibleNodes()
     const view = state.viewport()
     const failures = state.failures()
@@ -219,7 +219,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const snapshot = () => ({
     rows: rows().slice,
     failures: rows().failures,
-    expanded: state.expanded(),
+    expanded: state.live.expanded,
     gitStatus: state.gitStatusMap(),
     total: rows().total,
     view: rows().view,
@@ -261,7 +261,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
             <TreeRows
               rows={snap.rows}
               failures={snap.failures}
-              expanded={snap.expanded}
+              expanded={new Set(snap.expanded)}
               gitStatus={snap.gitStatus}
               total={snap.total}
               view={snap.view}

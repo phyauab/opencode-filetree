@@ -1,97 +1,144 @@
-import { createSignal, type Setter } from "solid-js"
 import type { DirEntry } from "./fileSystem"
 import { computeVisibleNodes, type VisibleNode } from "./treeLogic"
 import type { ChildrenMap, FailuresMap } from "./loader"
-import { computeViewport, viewportHeight, type Viewport } from "./viewport"
+import { computeViewport, type Viewport } from "./viewport"
+
+/**
+ * The small, frequently-changing part of the tree's state.
+ *
+ * The plugin entry puts this in `context.storage.memory`, a live Solid store:
+ * "old and new generations share the same live store", updates are synchronous,
+ * and values need not be JSON-serializable. Reading these properties inside a
+ * Solid computation is reactive, which is what makes the host's own sidebar
+ * sections update live.
+ *
+ * The plugin's own `createSignal` state was not reactive in that way:
+ * diagnostics showed the cursor moving, folders expanding and every click
+ * landing, with nothing drawn. Only unmounting and remounting the panel forced a
+ * repaint, which is the flash.
+ */
+export type LiveTreeState = {
+  cursor: number
+  expanded: string[]
+  viewportHeight: number
+}
 
 export type TreeState = {
   entries: () => DirEntry[]
-  setEntries: Setter<DirEntry[]>
+  setEntries: (next: DirEntry[] | ((prev: DirEntry[]) => DirEntry[])) => void
   childrenMap: () => ChildrenMap
-  setChildrenMap: Setter<ChildrenMap>
+  setChildrenMap: (next: ChildrenMap | ((prev: ChildrenMap) => ChildrenMap)) => void
   failures: () => FailuresMap
-  setFailures: Setter<FailuresMap>
-  expanded: () => Set<string>
-  setExpanded: Setter<Set<string>>
-  cursor: () => number
-  setCursor: Setter<number>
+  setFailures: (next: FailuresMap | ((prev: FailuresMap) => FailuresMap)) => void
   gitStatusMap: () => Map<string, string>
-  setGitStatusMap: Setter<Map<string, string>>
+  setGitStatusMap: (next: Map<string, string> | ((prev: Map<string, string>) => Map<string, string>)) => void
   visibleNodes: () => VisibleNode[]
   currentEntry: () => DirEntry | undefined
+  cursor: () => number
+  setCursor: (next: number | ((prev: number) => number)) => void
+  expanded: () => Set<string>
+  setExpanded: (next: Set<string> | ((prev: Set<string>) => Set<string>)) => void
+  viewportHeight: () => number
+  setViewportHeight: (next: number | ((prev: number) => number)) => void
   /** Moves the cursor back inside the tree after it shrinks. */
   clampCursor: () => void
   /** Re-reads the project root. Installed by the FileTree component. */
   setReload: (fn: () => void) => void
   reload: () => void
+  /** The live store, for reactive reads in the component. */
+  live: LiveTreeState
   /** Rows that fit the panel; the component sets this from the layout. */
-  viewportHeight: () => number
-  setViewportHeight: Setter<number>
-  /** The slice of visible rows currently rendered. */
+  setViewport: (next: Viewport | ((prev: Viewport) => Viewport)) => void
   viewport: () => Viewport
+  /** Top row of the current window, carried between renders. */
+  scroll: () => number
+  setScroll: (next: number) => void
 }
 
-export function createTreeState(): TreeState {
-  const [entries, setEntries] = createSignal<DirEntry[]>([])
-  const [childrenMap, setChildrenMap] = createSignal<ChildrenMap>(new Map())
-  const [failures, setFailures] = createSignal<FailuresMap>(new Map())
-  const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
-  const [cursor, setCursor] = createSignal(0)
-  const [gitStatusMap, setGitStatusMap] = createSignal<Map<string, string>>(new Map())
-  const [height, setHeight] = createSignal(20)
-  // A plain variable, not a signal: it is written and read inside the viewport
-  // memo below, which already tracks everything it depends on.
+/** Builds the tree state around a live store. */
+export function createTreeState(
+  live: LiveTreeState = { cursor: 0, expanded: [], viewportHeight: 0 },
+): TreeState {
+  let entriesValue: DirEntry[] = []
+  let childrenValue: ChildrenMap = new Map()
+  let failuresValue: FailuresMap = new Map()
+  let gitStatusValue: Map<string, string> = new Map()
+  let reloadFn: () => void = () => {}
   let scroll = 0
-  let reloadFn: (() => void) | undefined
 
-  const visibleNodes = () => computeVisibleNodes(entries(), expanded(), childrenMap())
+  const entries = () => entriesValue
+  const childrenMap = () => childrenValue
+  const failures = () => failuresValue
+  const gitStatusMap = () => gitStatusValue
 
-  const currentEntry = () => {
-    const nodes = visibleNodes()
-    const idx = cursor()
-    return idx >= 0 && idx < nodes.length ? nodes[idx].entry : undefined
-  }
+  const visibleNodes = () =>
+    computeVisibleNodes(entriesValue, new Set(live.expanded), childrenValue)
+  const currentEntry = () => visibleNodes()[live.cursor]?.entry
 
-  const clampCursor = () => {
-    const max = visibleNodes().length
-    if (max === 0) {
-      if (cursor() !== 0) setCursor(0)
-      return
-    }
-    if (cursor() > max - 1) setCursor(max - 1)
-  }
-
-  // A plain function rather than createMemo: memos outside a reactive root
-  // (tests, the plugin's own setup) do not recompute on dependency change.
-  const viewport = () => {
-    const total = visibleNodes().length
-    const view = computeViewport(total, cursor(), height(), scroll)
-    scroll = view.start
-    return view
-  }
-
-  return {
+  const state: TreeState = {
     entries,
-    setEntries,
+    setEntries: (next) => {
+      entriesValue = typeof next === "function" ? next(entriesValue) : next
+    },
     childrenMap,
-    setChildrenMap,
+    setChildrenMap: (next) => {
+      childrenValue = typeof next === "function" ? next(childrenValue) : next
+    },
     failures,
-    setFailures,
-    expanded,
-    setExpanded,
-    cursor,
-    setCursor,
+    setFailures: (next) => {
+      failuresValue = typeof next === "function" ? next(failuresValue) : next
+    },
     gitStatusMap,
-    setGitStatusMap,
+    setGitStatusMap: (next) => {
+      gitStatusValue = typeof next === "function" ? next(gitStatusValue) : next
+    },
     visibleNodes,
     currentEntry,
-    clampCursor,
+    cursor: () => live.cursor,
+    setCursor: (next) => {
+      live.cursor = typeof next === "function" ? next(live.cursor) : next
+    },
+    expanded: () => new Set(live.expanded),
+    setExpanded: (next) => {
+      const value = typeof next === "function" ? next(new Set(live.expanded)) : next
+      live.expanded = [...value]
+    },
+    viewportHeight: () => live.viewportHeight,
+    setViewportHeight: (next) => {
+      live.viewportHeight = typeof next === "function" ? next(live.viewportHeight) : next
+    },
+    clampCursor: () => {
+      const max = visibleNodes().length
+      if (live.cursor >= max) live.cursor = Math.max(0, max - 1)
+      if (live.cursor < 0) live.cursor = 0
+    },
     setReload: (fn) => {
       reloadFn = fn
     },
-    reload: () => reloadFn?.(),
-    viewportHeight: () => viewportHeight(height()),
-    setViewportHeight: setHeight,
-    viewport,
+    reload: () => reloadFn(),
+    live,
+    viewport: () => computeViewportState(state),
+    setViewport: () => {},
+    scroll: () => scroll,
+    setScroll: (next: number) => {
+      scroll = next
+    },
   }
+
+  return state
+}
+
+/**
+ * Recomputes the windowed viewport.
+ *
+ * Delegates to computeViewport so the view keeps its documented behaviour: it
+ * stays still while the cursor moves within it, and only scrolls as far as
+ * needed to keep the cursor on screen. The scroll offset is carried between
+ * calls so successive renders advance rather than jump.
+ */
+export function computeViewportState(state: TreeState): Viewport {
+  const total = state.visibleNodes().length
+  const view = computeViewport(total, state.cursor(), state.viewportHeight(), state.scroll())
+  state.setScroll(view.start)
+  return view
 }
