@@ -9,7 +9,6 @@ import { restorePaths, persistPaths, shouldRestore, restorablePaths } from "./la
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
-import { traceClick } from "./trace"
 import { toggleExpand } from "./treeLogic"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
@@ -34,24 +33,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const context = props.context
   const state = props.state
 
-  type Renderer = {
-    requestRender?: () => void
-    render?: () => void
-  }
-  const renderer = context.renderer as unknown as Renderer
-
-  /**
-   * Asks the renderer for a frame. The host repaints for its own events but not
-   * for a plugin updating its own signals, so plugin state changes were correct
-   * in the trace yet never appeared on screen.
-   */
-  const requestFrame = () => {
-    renderer.requestRender?.() ?? renderer.render?.()
-  }
-
-  // Proves the component mounted, so an empty click log means clicks are not
-  // arriving rather than the plugin never having run.
-  traceClick("mount", { directory: resolveDirectory(context) ?? null })
+  
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
@@ -230,58 +212,19 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     return { slice, failures, total: nodes.length, view, reason: empty(), directory }
   }
 
-  /**
-   * Handles a click on a row: selects it, and expands or collapses a folder.
-   *
-   * The row is passed in rather than derived from the click's coordinates. A
-   * coordinate-based handler silently did nothing: MouseEvent.y is not relative
-   * to the target in the way that assumed, so every click fell outside the
-   * window and returned early. Each row is its own focusable box so the handler
-   * knows exactly which row it belongs to, with no arithmetic to get wrong.
-   */
-  const onRowClick = (index: number) => {
+  /** Selects a row by index, ignoring positions outside the tree. */
+  const select = (index: number) => {
     const nodes = state.visibleNodes()
-    const node = nodes[index]
-    traceClick("row-click", {
-      index,
-      total: nodes.length,
-      name: node?.entry.name ?? null,
-      before: state.cursor(),
-    })
-    if (!node) return
-
+    if (index < 0 || index >= nodes.length) return
     state.setCursor(index)
-    if (node.entry.isDirectory) {
-      state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
-    }
     state.clampCursor()
-    // State is correct but the host does not repaint plugin components when a
-    // plugin changes its own signals. Ask for a frame explicitly.
-    requestFrame()
-    traceClick("row-click-after", {
-      index,
-      after: state.cursor(),
-      requestRender: typeof renderer.requestRender === "function",
-      render: typeof renderer.render === "function",
-    })
-    setClickReport(`click ${index} → ${node.entry.name} of ${nodes.length}`)
   }
 
-  /** Last click result, shown in the panel so a no-op is visible. */
-  const [clickReport, setClickReport] = createSignal("")
-
   return (
-    // Both levels carry a handler. The root box is the one proven to receive
-    // clicks in this host, and per-row boxes narrow the target when they are in
-    // the hit grid.
     <box focusable onMouseDown={(event: { y: number }) => {
-      const rows = state.visibleNodes().length
-      traceClick("root-click", { y: event?.y, rows, cursor: state.cursor() })
-      setClickReport(`root click, ${rows} rows`)
+      const view = state.viewport()
+      select(view.start + Math.max(0, event.y))
     }}>
-      <Show when={clickReport()}>
-        <text fg="yellow">{clickReport()}</text>
-      </Show>
       <Show
         when={rows().total > 0}
         fallback={
@@ -295,19 +238,14 @@ export const FileTree: Component<FileTreeProps> = (props) => {
           </text>
         }
       >
-        {rows().slice.map(({ node, index, selected }) => (
-          // focusable is what puts a renderable in the host's hit grid, so a
-          // plain box receives no clicks at all. It is inert otherwise, since no
-          // keymap layer routes keys here.
-          <box focusable onMouseDown={() => onRowClick(index)}>
-            <TreeNode
-              entry={node.entry}
-              depth={node.depth}
-              isSelected={selected}
-              isExpanded={state.expanded().has(node.entry.path)}
-              gitStatus={state.gitStatusMap().get(node.entry.path)}
-            />
-          </box>
+        {rows().slice.map(({ node, selected }) => (
+          <TreeNode
+            entry={node.entry}
+            depth={node.depth}
+            isSelected={selected}
+            isExpanded={state.expanded().has(node.entry.path)}
+            gitStatus={state.gitStatusMap().get(node.entry.path)}
+          />
         ))}
         <Show when={rows().view.start > 0}>
           <text fg="dim"> {rows().view.start} more above</text>

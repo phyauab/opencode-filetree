@@ -1,66 +1,113 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
-import { createTreeCommands, spawnEditor, promptSession } from "./commands"
-import { createSignal } from "solid-js"
+import { Show, type Component } from "solid-js"
+import { moveCursor, toggleExpand } from "./treeLogic"
+
+/** Panel name, used as the shared selection value for session.panel. */
+const PANEL = "filetree.tree"
+
+/**
+ * The tree, rendered into a session panel.
+ *
+ * A panel is the documented surface for interactive plugin UI: the host owns
+ * sizing, focus and input scope, and reports `focused` reactively. The earlier
+ * build rendered into sidebar.content with a keymap layer registered from setup,
+ * which gave the plugin no ownership of input or repaints; state changed
+ * correctly and nothing was ever painted.
+ */
+const TreePanel: Component<{
+  context: any
+  state: ReturnType<typeof createTreeState>
+  nav: { move: (d: number) => void; toggle: () => void; refresh: () => void }
+}> = (props) => {
+  const context = props.context
+  const panel = context.ui.panel
+  const state = props.state
+  const nav = props.nav
+
+  // The keymap layer is created from the component, not from setup, so it lives
+  // and dies with the panel and only exists while the host says the panel owns
+  // input.
+  context.keymap.layer(() => ({
+    enabled: () => panel.current()?.name === PANEL,
+    commands: [
+      { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => nav.move(-1) },
+      { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => nav.move(1) },
+      { id: "filetree.expand", title: "File tree: expand", bind: "right", run: nav.toggle },
+      { id: "filetree.collapse", title: "File tree: collapse", bind: "left", run: nav.toggle },
+      { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => nav.refresh() },
+      { id: "filetree.close", title: "File tree: close", bind: "escape", run: () => panel.close() },
+    ],
+    bindings: [
+      "filetree.up",
+      "filetree.down",
+      "filetree.expand",
+      "filetree.collapse",
+      "filetree.refresh",
+      "filetree.close",
+    ],
+  }))
+
+  return (
+    <Show when={panel.current()?.name === PANEL}>
+      <FileTree state={state} context={context} />
+    </Show>
+  )
+}
 
 export default Plugin.define({
   id: "filetree",
   setup(context) {
     const state = createTreeState()
-    const [sessionID, setSessionID] = createSignal("")
 
-    // The sidebar slot reports the active session, which sending a path needs.
-    // It is rendered on every session, so this stays current as the user
-    // switches.
-    const unregisterSlot = context.ui.slot({
-      append: "sidebar.content",
-      render: (input) => {
-        if (input.sessionID) setSessionID(input.sessionID)
-        return <FileTree state={state} context={context} />
+    // Navigation actions, bound to keys inside the panel below. Held here so the
+    // keymap layer and the rendered tree share one implementation.
+    const nav = {
+      move: (delta: number) =>
+        state.setCursor((c) => moveCursor(c, delta, state.visibleNodes().length)),
+      toggle: () => {
+        const entry = state.currentEntry()
+        if (entry?.isDirectory) {
+          state.setExpanded((prev) => toggleExpand(entry.path, prev))
+          state.clampCursor()
+        }
       },
+      refresh: () => state.reload(),
+    }
+
+    const unregisterPanel = context.ui.slot({
+      append: "session.panel",
+      render: (panelInput: { name: string; sessionID: string }) => (
+        <Show when={panelInput.name === PANEL}>
+          <TreePanel context={context} state={state} nav={nav} />
+        </Show>
+      ),
     })
 
-    const notify = (message: string, variant: "info" | "error") =>
-      context.ui.toast.show({ message, variant })
-
-    const commands = createTreeCommands({
-      visibleNodes: state.visibleNodes,
-      currentEntry: state.currentEntry,
-      setCursor: state.setCursor,
-      setExpanded: state.setExpanded,
-      clampCursor: state.clampCursor,
-      reload: state.reload,
-      openInEditor: spawnEditor,
-      sendToSession: (entry) => {
-        void promptSession(context.client, sessionID(), entry).then((result) => {
-          if (!result.ok) notify(`Could not send ${entry.name}: ${result.error}`, "error")
-        })
-      },
-    })
-
-    /*
-     * No keymap layer is registered, and that is deliberate.
-     *
-     * Two attempts failed and both are recorded in the git history. Pushing an
-     * input mode took over the host's key routing and left the TUI unable to
-     * route any key at all. Scoping a layer to renderer focus had the keys
-     * arrive correctly and the state update correctly -- the trace showed the
-     * cursor moving from 0 to 1 and the clamp effect re-running -- but the host
-     * never painted the updated rows. Nothing about the tree's own logic was
-     * wrong; the host simply does not repaint plugin components in response to
-     * keymap commands in this build.
-     *
-     * Mouse input does make the host render a frame, so the tree is driven by
-     * clicks, and registering no keys leaves the prompt entirely untouched.
-     */
-
-    // Kept for the palette and for tests: the command set is still coherent and
-    // is what a future keyboard layer would bind.
-    void commands
+    // Open the panel. The host scopes input and focus to it, which is what the
+    // sidebar slot never did.
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "filetree.toggle",
+          title: "File tree",
+          group: "File tree",
+          palette: true,
+          suggested: true,
+          run: () => {
+            const open = context.ui.panel.current()?.name === PANEL
+            if (open) context.ui.panel.close()
+            else context.ui.panel.open(PANEL)
+          },
+        },
+      ],
+      bindings: ["filetree.toggle"],
+    }))
 
     return () => {
-      unregisterSlot()
+      unregisterPanel()
     }
   },
 })

@@ -60,39 +60,53 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-The tree is always visible in the sidebar. It is driven by the mouse:
+Open the file tree panel from the command palette (`ctrl+p`, **File tree**, in the
+"File tree" group) or the suggested list.
 
-| Action | How |
-|--------|-----|
-| Select a row | Click it |
-| Expand / collapse a folder | Click it |
+While the panel is open the host owns its input, so these keys go to the tree:
 
-The selected row is marked with `›`.
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move selection |
+| `→` | Expand folder |
+| `←` | Collapse folder |
+| `r` | Refresh |
+| `esc` | Close the panel |
 
-The tree also re-reads itself when files change on disk.
+The selected row is marked with `›`. The tree also re-reads itself when files
+change on disk.
 
-## No keyboard bindings
+## Why a panel and not the sidebar
 
-The plugin registers **no** keys at all, on purpose.
+This plugin originally rendered into the `sidebar.content` slot and registered
+its own keymap layer. That does not work, and the reason is worth recording.
 
-Keyboard navigation was implemented and removed. The keys arrived correctly and
-the tree's state updated correctly — a diagnostic log showed the cursor moving
-from index 0 to 1 and the clamp effect re-running on every change — but OpenCode
-2.0.24 never repainted the updated rows. Nothing about the tree's logic was at
-fault; the host does not repaint plugin components in response to keymap
-commands in this build.
+OpenCode documents `session.panel` as the surface for interactive plugin UI:
+*"The host owns sizing, focus, and full-screen presentation."* The sidebar slot
+carries only a `sessionID` — the plugin gets no ownership of input, focus, or
+repaints.
 
-Two earlier approaches made things worse and are recorded in the git history:
+Diagnostics proved the sidebar approach was a dead end. A trace file written by
+the plugin showed, over a real session:
 
-- **Pushing an input mode** (`keymap.mode.push`) took over the host's key
-  routing entirely. Afterwards no key reached anything, and only clicking the UI
-  recovered.
-- **Moving renderer focus** to the tree delivered the keys but left the prompt
-  without its cursor, with a delay before typing worked again.
+```
+{"event":"row-click","index":1,"name":"superpowers","before":0}
+{"event":"row-click-after","index":1,"after":1}
+```
 
-A mouse event makes the host render a frame, so clicks are reliable where
-keymap commands were not. Registering no keymap layer also means the plugin
-cannot interfere with typing or with any key you use.
+Every one of 28 clicks registered, the cursor updated correctly, and clicking a
+folder really did expand it (the visible row count went 16 → 41). The panel just
+never repainted to show it. The same held for keyboard input: keys arrived and
+state changed, nothing was drawn.
+
+Pushing an input mode made it worse — it took over the host's key routing, and
+afterwards no key reached anything until the user clicked the UI. Moving renderer
+focus took the prompt's cursor away and delayed typing on the way back. Both are
+in the git history.
+
+The panel slot exists precisely so the host drives rendering and input for
+interactive plugin content, and a keymap layer created inside the panel component
+is active only while the panel owns input.
 
 ## Files with git changes
 
