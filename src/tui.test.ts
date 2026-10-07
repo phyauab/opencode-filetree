@@ -121,7 +121,8 @@ itRender("registers no keymap commands, so the prompt keeps every key", async ()
     // delay on the way back.
     const treeElement = slots[0].claim.render({ sessionID: "ses_1" }) as any
     const rootElement = treeElement.type(treeElement.props) as any
-    expect(rootElement.props.onMouseDown).toBeUndefined()
+    // The root box carries a handler too: it is the level proven to receive clicks.
+    expect(typeof rootElement.props.onMouseDown).toBe("function")
 
     expect(pushed).toEqual([])
   })

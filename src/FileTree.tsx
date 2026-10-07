@@ -229,10 +229,20 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
     }
     state.clampCursor()
+    setClickReport(`click ${index} → ${node.entry.name} of ${nodes.length}`)
   }
 
+  /** Last click result, shown in the panel so a no-op is visible. */
+  const [clickReport, setClickReport] = createSignal("")
+
   return (
-    <box>
+    // Both levels carry a handler. The root box is the one proven to receive
+    // clicks in this host, and per-row boxes narrow the target when they are in
+    // the hit grid.
+    <box focusable onMouseDown={() => setClickReport(`root click, ${state.visibleNodes().length} rows`)}>
+      <Show when={clickReport()}>
+        <text fg="yellow">{clickReport()}</text>
+      </Show>
       <Show
         when={rows().total > 0}
         fallback={
