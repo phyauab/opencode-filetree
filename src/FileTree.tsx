@@ -34,6 +34,21 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const context = props.context
   const state = props.state
 
+  type Renderer = {
+    requestRender?: () => void
+    render?: () => void
+  }
+  const renderer = context.renderer as unknown as Renderer
+
+  /**
+   * Asks the renderer for a frame. The host repaints for its own events but not
+   * for a plugin updating its own signals, so plugin state changes were correct
+   * in the trace yet never appeared on screen.
+   */
+  const requestFrame = () => {
+    renderer.requestRender?.() ?? renderer.render?.()
+  }
+
   // Proves the component mounted, so an empty click log means clicks are not
   // arriving rather than the plugin never having run.
   traceClick("mount", { directory: resolveDirectory(context) ?? null })
@@ -240,7 +255,15 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
     }
     state.clampCursor()
-    traceClick("row-click-after", { index, after: state.cursor() })
+    // State is correct but the host does not repaint plugin components when a
+    // plugin changes its own signals. Ask for a frame explicitly.
+    requestFrame()
+    traceClick("row-click-after", {
+      index,
+      after: state.cursor(),
+      requestRender: typeof renderer.requestRender === "function",
+      render: typeof renderer.render === "function",
+    })
     setClickReport(`click ${index} → ${node.entry.name} of ${nodes.length}`)
   }
 
