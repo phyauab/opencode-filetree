@@ -9,6 +9,7 @@ import { restorePaths, persistPaths, shouldRestore, restorablePaths } from "./la
 import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
+import { traceClick } from "./trace"
 import { toggleExpand } from "./treeLogic"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
@@ -32,6 +33,10 @@ type FileTreeProps = {
 export const FileTree: Component<FileTreeProps> = (props) => {
   const context = props.context
   const state = props.state
+
+  // Proves the component mounted, so an empty click log means clicks are not
+  // arriving rather than the plugin never having run.
+  traceClick("mount", { directory: resolveDirectory(context) ?? null })
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
@@ -222,6 +227,12 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const onRowClick = (index: number) => {
     const nodes = state.visibleNodes()
     const node = nodes[index]
+    traceClick("row-click", {
+      index,
+      total: nodes.length,
+      name: node?.entry.name ?? null,
+      before: state.cursor(),
+    })
     if (!node) return
 
     state.setCursor(index)
@@ -229,6 +240,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       state.setExpanded((prev) => toggleExpand(node.entry.path, prev))
     }
     state.clampCursor()
+    traceClick("row-click-after", { index, after: state.cursor() })
     setClickReport(`click ${index} → ${node.entry.name} of ${nodes.length}`)
   }
 
@@ -239,7 +251,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     // Both levels carry a handler. The root box is the one proven to receive
     // clicks in this host, and per-row boxes narrow the target when they are in
     // the hit grid.
-    <box focusable onMouseDown={() => setClickReport(`root click, ${state.visibleNodes().length} rows`)}>
+    <box focusable onMouseDown={(event: { y: number }) => {
+      const rows = state.visibleNodes().length
+      traceClick("root-click", { y: event?.y, rows, cursor: state.cursor() })
+      setClickReport(`root click, ${rows} rows`)
+    }}>
       <Show when={clickReport()}>
         <text fg="yellow">{clickReport()}</text>
       </Show>
