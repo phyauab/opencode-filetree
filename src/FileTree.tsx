@@ -235,7 +235,10 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    <box onMouseDown={onClick}>
+    // focusable is what puts the box in the host's hit grid: with it, clicks
+    // arrive; without it, onMouseDown never fires. It is inert otherwise, since
+    // no keymap layer is registered to route keys here.
+    <box focusable onMouseDown={onClick}>
       <Show
         when={rows().total > 0}
         fallback={
