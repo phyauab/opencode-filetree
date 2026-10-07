@@ -62,6 +62,13 @@ export default Plugin.define({
     const state = createTreeState()
 
     /**
+     * Pending remount, coalesced. A remount redraws the panel, and the host
+     * tears down the whole screen around it, so holding an arrow key would flash
+     * once per keystroke. One remount per burst of changes is enough.
+     */
+    let repaintTimer: ReturnType<typeof setTimeout> | undefined
+
+    /**
      * Forces the panel to remount so the host repaints it.
      *
      * WORKAROUND, not a design choice. OpenCode 2.0.24 does not repaint a
@@ -75,23 +82,29 @@ export default Plugin.define({
      * panel comes back where the user left it.
      */
     const repaint = () => {
-      context.ui.panel.close()
-      setTimeout(() => context.ui.panel.open(PANEL), 0)
+      if (repaintTimer) clearTimeout(repaintTimer)
+      repaintTimer = setTimeout(() => {
+        repaintTimer = undefined
+        context.ui.panel.close()
+        setTimeout(() => context.ui.panel.open(PANEL), 0)
+      }, 80)
     }
 
     // Navigation actions, bound to keys inside the panel below. Held here so the
     // keymap layer and the rendered tree share one implementation.
     const nav = {
       move: (delta: number) => {
+        const before = state.cursor()
         state.setCursor((c) => moveCursor(c, delta, state.visibleNodes().length))
+        // Already at the end: nothing to redraw, so nothing to flash.
+        if (state.cursor() === before) return
         repaint()
       },
       toggle: () => {
         const entry = state.currentEntry()
-        if (entry?.isDirectory) {
-          state.setExpanded((prev) => toggleExpand(entry.path, prev))
-          state.clampCursor()
-        }
+        if (!entry?.isDirectory) return
+        state.setExpanded((prev) => toggleExpand(entry.path, prev))
+        state.clampCursor()
         repaint()
       },
       refresh: () => {
@@ -131,6 +144,7 @@ export default Plugin.define({
     }))
 
     return () => {
+      if (repaintTimer) clearTimeout(repaintTimer)
       unregisterPanel()
     }
   },
