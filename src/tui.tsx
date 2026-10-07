@@ -61,9 +61,6 @@ export default Plugin.define({
   setup(context) {
     const state = createTreeState()
 
-    /** Session the panel is open in, needed to invalidate its cached data. */
-    let sessionID = ""
-
     /**
      * Pending repaint, coalesced. A repaint redraws the panel, and the host
      * tears down the whole screen around it, so holding an arrow key would flash
@@ -72,28 +69,28 @@ export default Plugin.define({
     let repaintTimer: ReturnType<typeof setTimeout> | undefined
 
     /**
-     * Asks the host to repaint the panel.
+     * Forces the panel to remount so the host repaints it.
      *
      * WORKAROUND, not a design choice. OpenCode 2.0.24 does not repaint a
      * session.panel's contents when the plugin changes its own state:
      * diagnostics showed the cursor moving, folders expanding and all 28 clicks
      * landing, with nothing appearing on screen. Keying the rows on a fresh
-     * snapshot did not help either.
+     * snapshot did not help either, and neither did invalidate(), which is the
+     * documented way to tell the host its cached data is stale.
      *
-     * invalidate() is the documented way to tell the host its cached data is
-     * stale, and it is synchronous and free. If the host re-renders the session
-     * view on invalidate, the panel repaints without being torn down, which is
-     * what close() + open() had to do instead -- and that rebuilds the screen
-     * around the panel, which is the flash.
+     * Unmounting and mounting the panel does repaint, because that path
+     * rebuilds the screen around it -- which is the flash. There is no documented
+     * API for asking the host to redraw a panel's contents.
      *
-     * Falls back to remounting the panel if invalidate does not repaint.
+     * The tree state lives here, in setup, so it survives the remount and the
+     * panel comes back where the user left it.
      */
     const repaint = () => {
       if (repaintTimer) clearTimeout(repaintTimer)
       repaintTimer = setTimeout(() => {
         repaintTimer = undefined
-        if (sessionID) context.data.session.invalidate(sessionID)
-        else context.ui.panel.close(), setTimeout(() => context.ui.panel.open(PANEL), 0)
+        context.ui.panel.close()
+        setTimeout(() => context.ui.panel.open(PANEL), 0)
       }, 80)
     }
 
@@ -122,14 +119,11 @@ export default Plugin.define({
 
     const unregisterPanel = context.ui.slot({
       append: "session.panel",
-      render: (panelInput: { name: string; sessionID: string }) => {
-        if (panelInput.sessionID) sessionID = panelInput.sessionID
-        return (
-          <Show when={panelInput.name === PANEL}>
-            <TreePanel context={context} state={state} nav={nav} />
-          </Show>
-        )
-      },
+      render: (panelInput: { name: string }) => (
+        <Show when={panelInput.name === PANEL}>
+          <TreePanel context={context} state={state} nav={nav} />
+        </Show>
+      ),
     })
 
     // Open the panel. The host scopes input and focus to it, which is what the
