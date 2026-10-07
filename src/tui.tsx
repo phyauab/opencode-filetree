@@ -59,42 +59,61 @@ const TreePanel: Component<{
 export default Plugin.define({
   id: "filetree",
   setup(context) {
-    // The live store holds the small, frequently-changing state. It is a Solid
-    // store, so reading it inside the component is reactive and the host repaints
-    // the change -- the same mechanism the host's own sidebar uses for live
-    // sections such as token usage. The plugin's own signals were not reactive
-    // in that way, which is why state updated correctly but nothing was drawn.
-    const [live, setLive] = context.storage.memory<{
-      cursor: number
-      expanded: string[]
-      viewportHeight: number
-    }>("filetree", { initial: { cursor: 0, expanded: [], viewportHeight: 0 } })
+    const state = createTreeState()
 
-    const state = createTreeState(live)
+    /**
+     * Pending repaint, coalesced. A repaint redraws the panel, and the host
+     * tears down the whole screen around it, so holding an arrow key would flash
+     * once per keystroke. One repaint per burst of changes is enough.
+     */
+    let repaintTimer: ReturnType<typeof setTimeout> | undefined
+
+    /**
+     * Forces the panel to remount so the host repaints it.
+     *
+     * WORKAROUND, not a design choice. OpenCode 2.0.24 does not repaint a
+     * session.panel's contents when the plugin changes its own state:
+     * diagnostics showed the cursor moving, folders expanding and all 28 clicks
+     * landing, with nothing appearing on screen. Keying the rows on a fresh
+     * snapshot did not help either, and neither did invalidate(), which is the
+     * documented way to tell the host its cached data is stale.
+     *
+     * Unmounting and mounting the panel does repaint, because that path
+     * rebuilds the screen around it -- which is the flash. There is no documented
+     * API for asking the host to redraw a panel's contents.
+     *
+     * The tree state lives here, in setup, so it survives the remount and the
+     * panel comes back where the user left it.
+     */
+    const repaint = () => {
+      if (repaintTimer) clearTimeout(repaintTimer)
+      repaintTimer = setTimeout(() => {
+        repaintTimer = undefined
+        context.ui.panel.close()
+        setTimeout(() => context.ui.panel.open(PANEL), 0)
+      }, 80)
+    }
 
     // Navigation actions, bound to keys inside the panel below. Held here so the
-    // keymap layer and the rendered tree share one implementation. They write to
-    // the live store, which is what makes the change repaint.
+    // keymap layer and the rendered tree share one implementation.
     const nav = {
       move: (delta: number) => {
-        const before = live.cursor
-        setLive((draft) => {
-          draft.cursor = moveCursor(draft.cursor, delta, state.visibleNodes().length)
-        })
-        // Already at the end: nothing changed, so nothing to repaint.
-        if (live.cursor === before) return
-        state.clampCursor()
+        const before = state.cursor()
+        state.setCursor((c) => moveCursor(c, delta, state.visibleNodes().length))
+        // Already at the end: nothing to redraw, so nothing to flash.
+        if (state.cursor() === before) return
+        repaint()
       },
       toggle: () => {
         const entry = state.currentEntry()
         if (!entry?.isDirectory) return
-        setLive((draft) => {
-          draft.expanded = [...toggleExpand(entry.path, new Set(draft.expanded))]
-        })
+        state.setExpanded((prev) => toggleExpand(entry.path, prev))
         state.clampCursor()
+        repaint()
       },
       refresh: () => {
         state.reload()
+        repaint()
       },
     }
 
@@ -129,6 +148,7 @@ export default Plugin.define({
     }))
 
     return () => {
+      if (repaintTimer) clearTimeout(repaintTimer)
       unregisterPanel()
     }
   },
