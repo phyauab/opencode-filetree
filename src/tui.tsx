@@ -61,19 +61,43 @@ export default Plugin.define({
   setup(context) {
     const state = createTreeState()
 
+    /**
+     * Forces the panel to remount so the host repaints it.
+     *
+     * WORKAROUND, not a design choice. OpenCode 2.0.24 does not repaint a
+     * session.panel's contents when the plugin changes its own state:
+     * diagnostics showed the cursor moving, folders expanding and all 28 clicks
+     * landing, with nothing appearing on screen. Keying the rows on a fresh
+     * snapshot did not help either. Unmounting and mounting the panel does,
+     * because that path repaints.
+     *
+     * The tree state lives here, in setup, so it survives the remount and the
+     * panel comes back where the user left it.
+     */
+    const repaint = () => {
+      context.ui.panel.close()
+      setTimeout(() => context.ui.panel.open(PANEL), 0)
+    }
+
     // Navigation actions, bound to keys inside the panel below. Held here so the
     // keymap layer and the rendered tree share one implementation.
     const nav = {
-      move: (delta: number) =>
-        state.setCursor((c) => moveCursor(c, delta, state.visibleNodes().length)),
+      move: (delta: number) => {
+        state.setCursor((c) => moveCursor(c, delta, state.visibleNodes().length))
+        repaint()
+      },
       toggle: () => {
         const entry = state.currentEntry()
         if (entry?.isDirectory) {
           state.setExpanded((prev) => toggleExpand(entry.path, prev))
           state.clampCursor()
         }
+        repaint()
       },
-      refresh: () => state.reload(),
+      refresh: () => {
+        state.reload()
+        repaint()
+      },
     }
 
     const unregisterPanel = context.ui.slot({
