@@ -214,6 +214,14 @@ bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```
 
+**A rebuild needs a full OpenCode restart.** The plugin is loaded once, when the
+TUI starts. OpenCode's plugin hot reload watches the shim's entry file
+(`~/.config/opencode/plugins/filetree/tui.ts`), not the `dist/tui.js` it
+imports — so editing `dist/` (via `bun run build`) changes nothing until the
+process restarts, and the old build keeps running with no error. If a change
+"isn't showing up", compare the OpenCode process start time against the
+`dist/` mtimes first.
+
 Everything except `src/tui.tsx` and `src/FileTree.tsx` is free of TUI and
 OpenTUI imports, so it is tested directly. `src/tui.tsx` is the thin plugin
 entry that wires commands to keybinds; `src/FileTree.tsx` is the only component
