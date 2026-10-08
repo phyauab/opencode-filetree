@@ -71,6 +71,45 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     state.setGitStatusMap(getGitStatusSync(dir))
   }
 
+  /*
+   * Focus state, for feedback only.
+   *
+   * The trace of a live session settled why ctrl+y "did nothing": the command
+   * ran, the root box was captured and focusable, and `focus()` moved the
+   * renderer's focus into the tree -- twice. It was invisible. The sidebar looks
+   * identical whether the keyboard is in the tree or in the prompt, so a
+   * working shortcut read as a dead one, and no amount of keybind archaeology
+   * would have found that.
+   *
+   * Two affordances, both driven from here: the box border switches to
+   * `focusedBorderColor` on its own (BoxRenderable already repaints on
+   * focus), and the hint line appears. The hint is what makes the press
+   * unmistakable.
+   */
+  const [focused, setFocused] = createSignal(false)
+
+  /**
+   * Captures the root box for the entry's focus command and watches it for
+   * focus changes.
+   *
+   * Stable identity on purpose: the solid runtime calls `ref` inside a render
+   * effect keyed on the function itself, so a fresh closure per render would
+   * re-subscribe on every state change.
+   */
+  let watchingRoot = false
+  const captureRoot = (el: TreeRootBox) => {
+    props.onRoot?.(el)
+    const renderable = el as unknown as {
+      focused?: boolean
+      on?: (event: string, listener: () => void) => void
+    }
+    setFocused(renderable.focused === true)
+    if (watchingRoot) return
+    watchingRoot = true
+    renderable.on?.("focused", () => setFocused(true))
+    renderable.on?.("blurred", () => setFocused(false))
+  }
+
   /**
    * Reads the project root into the tree, and marks it loaded on success only.
    *
@@ -266,6 +305,9 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     state.gitStatusMap()
     state.viewportHeight()
     empty()
+    // Focus is in the list because the hint line is drawn from it, and the
+    // renderer's own repaint on focus change cannot know about a solid signal.
+    focused()
     context.renderer.requestRender()
   })
 
@@ -315,7 +357,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const onClick = (event: { y: number }) => {
     trace("mouse.down", { y: event?.y })
     const view = state.viewport()
-    const index = view.start + Math.max(0, event.y)
+    // The hint line owns line 0 whether or not it is showing, so a click's y
+    // maps to a row one line lower. Reserving the line always keeps every row
+    // on the same y, which is what lets a click select what it looks like it
+    // selected.
+    const index = view.start + Math.max(0, event.y - 1)
     const nodes = state.visibleNodes()
     // Bound by the rows actually rendered, not by the whole tree: the
     // "N more below" and unreadable-folder hints are drawn inside this same box,
@@ -333,7 +379,28 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    <box focusable ref={props.onRoot} onMouseDown={onClick}>
+    <box
+      focusable
+      ref={captureRoot}
+      onMouseDown={onClick}
+      // A one-column left edge is the cheap half of the focus affordance: it is
+      // always there, so the eye learns where focus can land, and BoxRenderable
+      // swaps it to `focusedBorderColor` by itself. "gray" rather than "dim"
+      // because parseColor only accepts CSS color names and hex.
+      border={["left"]}
+      borderColor="gray"
+      focusedBorderColor="cyan"
+    >
+      {/*
+       * The loud half. The line is reserved whether or not it has anything to
+       * say, so focusing changes no heights and no row positions; only the text
+       * appears.
+       */}
+      <Show when={focused()} fallback={<text fg="dim">{" "}</text>}>
+        <text fg="cyan" wrapMode="none" truncate>
+          {"↑↓ move · enter open · s send · esc"}
+        </text>
+      </Show>
       <Show
         when={rows().total > 0}
         fallback={
