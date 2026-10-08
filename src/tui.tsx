@@ -82,10 +82,13 @@ export default Plugin.define({
           group: "File tree",
           palette: true,
           suggested: true,
-          // ctrl+e, the explorer convention, so the tree is one keypress away
-          // instead of a trip through the palette. It is unbound in the host's
-          // defaults, and `filetree.toggle` stays rebindable by id.
-          bind: "ctrl+e",
+          // ctrl+y, one keypress away instead of a trip through the palette.
+          // ctrl+e was the first choice and silently did nothing: the host
+          // binds it as `input.line.end`, so the prompt editor consumed every
+          // press. ctrl+y appears nowhere in the host's default keybind map
+          // (the complete one, input.* section included), and the command
+          // stays rebindable by id.
+          bind: "ctrl+y",
           run: () => {
             if (context.ui.panel.current()?.name === PANEL) context.ui.panel.close()
             else context.ui.panel.open(PANEL)

@@ -220,15 +220,16 @@ describe("plugin entry", () => {
     expect(nav!.factory().enabled()).toBe(true)
   })
 
-  itRender("binds ctrl+e to the panel toggle", async () => {
+  itRender("binds ctrl+y to the panel toggle", async () => {
     const { default: mod } = await load()
     const { context, allCommands } = createMockContext()
     await mod.setup(context)
 
-    // Reaching for ctrl+p and the palette for every open was the complaint;
-    // ctrl+e is unbound in the host's defaults (checked the full list), and it
-    // is the convention VS Code uses for a file explorer.
-    expect(allCommands().find((c: any) => c.id === "filetree.toggle")!.bind).toBe("ctrl+e")
+    // Reaching for ctrl+p and the palette for every open was the complaint.
+    // ctrl+e was tried first and silently failed: the host binds it as
+    // `input.line.end`, so the prompt editor swallowed every press. ctrl+y
+    // appears nowhere in the host's complete default keybind map.
+    expect(allCommands().find((c: any) => c.id === "filetree.toggle")!.bind).toBe("ctrl+y")
   })
 
   itRender("one keypress moves the cursor exactly one row", async () => {

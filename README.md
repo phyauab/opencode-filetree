@@ -60,9 +60,9 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Open the file tree panel with **`ctrl+e`** — one keypress, no palette needed.
+Open the file tree panel with **`ctrl+y`** — one keypress, no palette needed.
 It is also in the command palette (`ctrl+p`, **File tree**, in the "File tree"
-group) and the suggested list. `ctrl+e` again closes it.
+group) and the suggested list. `ctrl+y` again closes it.
 
 While the panel is open the host owns its input, so these keys go to the tree:
 
