@@ -56,7 +56,16 @@ describe("dist import specifiers", () => {
   it("leaves host-resolved specifiers bare", async () => {
     const source = await readFile(join(dist, "tui.js"), "utf8")
     // These must stay as written so the host can rewrite them.
-    expect(source).toContain('from "@opentui/solid/jsx-runtime"')
+    expect(source).toContain('from "@opentui/solid"')
     expect(source).toContain('from "@opencode/plugin/tui"')
+  })
+
+  it("wraps component props in getters so they stay reactive", async () => {
+    // tsc cannot do this: its JSX modes pass props as a plain object, and a
+    // Solid component reading its props from a memo then has no dependency
+    // and never re-runs. The whole plugin was inert until the build switched
+    // to babel-preset-solid.
+    const source = await readFile(join(dist, "FileTree.js"), "utf8")
+    expect(source).toMatch(/get when\(\)/)
   })
 })

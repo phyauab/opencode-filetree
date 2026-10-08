@@ -24,6 +24,17 @@ export type TreeState = {
   /** Re-reads the project root. Installed by the FileTree component. */
   setReload: (fn: () => void) => void
   reload: () => void
+  /** True until the project root has been read. */
+  needsRootLoad: () => boolean
+  setRootLoaded: (loaded: boolean) => void
+  /**
+   * True until the stored layout has been restored once. The stored layout is
+   * where the session starts, not something to re-apply over the user's own
+   * changes: restoring on every mount stomped them, so a folder collapsed during
+   * the session sprang back open.
+   */
+  needsLayoutRestore: () => boolean
+  markLayoutRestored: () => void
   /** Rows that fit the panel; the component sets this from the layout. */
   viewportHeight: () => number
   setViewportHeight: Setter<number>
@@ -43,6 +54,12 @@ export function createTreeState(): TreeState {
   // memo below, which already tracks everything it depends on.
   let scroll = 0
   let reloadFn: (() => void) | undefined
+  // A plain flag for the same reason. This state outlives the tree component, so
+  // the project root only needs reading once unless a refresh asks for it again.
+  let rootLoaded = false
+  // Same reasoning: the stored layout is a starting point for the session, not
+  // something to re-apply over the user's own changes.
+  let layoutRestored = false
 
   const visibleNodes = () => computeVisibleNodes(entries(), expanded(), childrenMap())
 
@@ -90,6 +107,14 @@ export function createTreeState(): TreeState {
       reloadFn = fn
     },
     reload: () => reloadFn?.(),
+    needsRootLoad: () => !rootLoaded,
+    setRootLoaded: (loaded: boolean) => {
+      rootLoaded = loaded
+    },
+    needsLayoutRestore: () => !layoutRestored,
+    markLayoutRestored: () => {
+      layoutRestored = true
+    },
     viewportHeight: () => viewportHeight(height()),
     setViewportHeight: setHeight,
     viewport,

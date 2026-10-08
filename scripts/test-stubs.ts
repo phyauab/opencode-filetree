@@ -11,16 +11,73 @@
 import { mock } from "bun:test"
 
 type Updater<T> = (prev: T) => T
+type Effect = () => void
 
-/** A minimal signal with Solid's value-or-updater setter semantics. */
+/**
+ * The effect currently reading a signal, if any. Real Solid tracks this per
+ * computation; one global is enough here because effects only nest through
+ * `untrack`.
+ */
+let activeEffect: Effect | null = null
+
+/**
+ * A signal with Solid's value-or-updater setter semantics, plus enough
+ * subscription tracking to re-run effects when a value they read changes.
+ *
+ * The tracking matters. With `createEffect` firing once and never again, the
+ * plugin's repaint path was unreachable from any test: a stale panel and a
+ * working one behaved identically, because nothing in the tree ever ran twice.
+ * That is how "the screen silently stopped updating" survived four fix attempts.
+ */
 function createSignal<T>(initial: T) {
   let value = initial
-  const read = () => value
-  const write = (next: T | Updater<T>) => {
-    value = typeof next === "function" ? (next as Updater<T>)(value) : next
+  const subscribers = new Set<Effect>()
+
+  const read = () => {
+    if (activeEffect) subscribers.add(activeEffect)
     return value
   }
+
+  const write = (next: T | Updater<T>) => {
+    const previous = value
+    value = typeof next === "function" ? (next as Updater<T>)(previous) : next
+    // Solid compares by identity and skips equal writes, so an effect that writes
+    // back the value it just read does not re-trigger itself forever.
+    if (Object.is(value, previous)) return value
+    for (const run of [...subscribers]) run()
+    return value
+  }
+
   return [read, write] as const
+}
+
+/** Creates an effect: runs once, then again whenever a signal it read changes. */
+function createEffect(fn: () => void): void {
+  const run: Effect = () => {
+    const previous = activeEffect
+    activeEffect = run
+    try {
+      fn()
+    } finally {
+      activeEffect = previous
+    }
+  }
+  run()
+}
+
+/**
+ * Runs `fn` without subscribing the surrounding effect to what it reads.
+ * FileTree depends on this: reading the plugin's live stores directly would
+ * re-run those effects on every session event.
+ */
+function untrack<T>(fn: () => T): T {
+  const previous = activeEffect
+  activeEffect = null
+  try {
+    return fn()
+  } finally {
+    activeEffect = previous
+  }
 }
 
 const cleanupCallbacks: (() => void)[] = []
@@ -28,13 +85,13 @@ const cleanupCallbacks: (() => void)[] = []
 mock.module("solid-js", () => ({
   createSignal,
   createMemo: <T,>(fn: () => T) => fn,
-  createEffect: (fn: () => void) => fn(),
+  createEffect,
   onCleanup: (fn: () => void) => {
     cleanupCallbacks.push(fn)
   },
   onMount: (fn: () => void) => fn(),
   createRoot: <T,>(fn: () => T) => fn(),
-  untrack: <T,>(fn: () => T) => fn(),
+  untrack,
   getOwner: () => null,
   runWithOwner: <T,>(_owner: unknown, fn: () => T) => fn(),
   mergeProps: <T extends object>(...parts: T[]) => Object.assign({}, ...parts),

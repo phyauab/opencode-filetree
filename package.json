@@ -25,7 +25,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/strip-opentui-runtime.mjs",
-    "build": "tsc -p tsconfig.build.json && node scripts/fix-dist-extensions.mjs",
+    "build": "node scripts/build.mjs && node scripts/fix-dist-extensions.mjs",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   }

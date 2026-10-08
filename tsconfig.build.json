@@ -5,7 +5,12 @@
     "jsxImportSource": "@opentui/solid",
     "outDir": "dist",
     "rootDir": "src",
-    "noEmit": false
+    "noEmit": false,
+    // Declarations only. The JS is emitted by scripts/build.mjs with
+    // babel-preset-solid: tsc's JSX modes pass component props as a plain
+    // object, which leaves every Show and For in the plugin without a
+    // dependency and therefore inert. See scripts/build.mjs.
+    "emitDeclarationOnly": true
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
