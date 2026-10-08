@@ -10,6 +10,7 @@ import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
 import { toggleExpand } from "./treeLogic"
+import { trace } from "./trace"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
 // stays testable without OpenCode's runtime.
@@ -45,6 +46,10 @@ export type TreeRootBox = {
 export const FileTree: Component<FileTreeProps> = (props) => {
   const context = props.context
   const state = props.state
+
+  // TEMPORARY: proves the component body runs in the host, so a missing
+  // `root.ref` line means the renderable never mounted.
+  trace("filetree.body")
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
@@ -308,6 +313,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
    * relative to the renderable it was dispatched on, so rows start at y 0.
    */
   const onClick = (event: { y: number }) => {
+    trace("mouse.down", { y: event?.y })
     const view = state.viewport()
     const index = view.start + Math.max(0, event.y)
     const nodes = state.visibleNodes()

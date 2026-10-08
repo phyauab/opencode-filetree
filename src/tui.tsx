@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
 import { createTreeCommands, spawnEditor, promptSession } from "./commands"
+import { trace } from "./trace"
 
 /**
  * SPIKE — throwaway. This is the sidebar-placement probe: the tree renders into
@@ -21,6 +22,7 @@ type TreeRoot = {
 export default Plugin.define({
   id: "filetree",
   setup(context) {
+    trace("setup", { hasKeymap: !!context.keymap, hasRenderer: !!context.renderer })
     const state = createTreeState()
 
     const notify = (message: string, variant: "info" | "error") =>
@@ -96,17 +98,27 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (input: { sessionID: string }) => {
         if (input.sessionID) sessionID = input.sessionID
+        trace("slot.render")
         return (
           <FileTree
             state={state}
             context={context}
             onRoot={(el: TreeRoot) => {
+              const anyEl = el as unknown as Record<string, unknown>
+              trace("root.ref", {
+                first: treeRoot === undefined,
+                focusable: anyEl._focusable,
+                destroyed: anyEl._isDestroyed,
+                focused: anyEl._focused,
+                hasParent: !!el.parent,
+              })
               treeRoot = el
             }}
           />
         )
       },
     })
+    trace("slot.claimed", { unregister: typeof unregisterSlot })
 
     /*
      * ctrl+y focuses the tree, or hands the keyboard back when it already has
@@ -118,24 +130,44 @@ export default Plugin.define({
      * keybind map -- verified against the complete map, input.* section
      * included -- and stays rebindable by command id (`filetree.focus`).
      */
-    context.keymap.layer(() => ({
-      mode: "global",
-      commands: [
-        {
-          id: "filetree.focus",
-          title: "File tree",
-          group: "File tree",
-          palette: true,
-          suggested: true,
-          bind: "ctrl+y",
-          run: () => {
-            if (focusedWithinTree()) treeRoot?.blur()
-            else treeRoot?.focus()
-          },
-        },
-      ],
-      bindings: ["filetree.focus"],
-    }))
+    try {
+      context.keymap.layer(() => {
+        trace("layer.factory", { layer: "focus" })
+        return {
+          mode: "global",
+          commands: [
+            {
+              id: "filetree.focus",
+              title: "File tree",
+              group: "File tree",
+              palette: true,
+              suggested: true,
+              bind: "ctrl+y",
+              run: () => {
+                const anyRoot = treeRoot as unknown as Record<string, unknown> | undefined
+                trace("focus.run", {
+                  hasRoot: !!treeRoot,
+                  withinTree: focusedWithinTree(),
+                  rootFocusable: anyRoot?._focusable,
+                  rootFocused: anyRoot?._focused,
+                  rootDestroyed: anyRoot?._isDestroyed,
+                })
+                if (focusedWithinTree()) treeRoot?.blur()
+                else treeRoot?.focus()
+                trace("focus.after", {
+                  currentFocused: !!context.renderer?.currentFocusedRenderable,
+                  withinTree: focusedWithinTree(),
+                })
+              },
+            },
+          ],
+          bindings: ["filetree.focus"],
+        }
+      })
+      trace("layer.registered", { layer: "focus" })
+    } catch (error) {
+      trace("layer.threw", { layer: "focus", error: String(error) })
+    }
 
     /*
      * The navigation layer is registered here, once, rather than from the panel
@@ -147,35 +179,54 @@ export default Plugin.define({
      * the bindings only fire while the focus is inside the tree, so the session
      * list and the prompt keep their own arrow keys.
      */
-    context.keymap.layer(() => ({
-      enabled: () => focusedWithinTree(),
-      commands: [
-        { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => nav.move(-1) },
-        { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => nav.move(1) },
-        { id: "filetree.expand", title: "File tree: expand", bind: "right", run: nav.toggle },
-        { id: "filetree.collapse", title: "File tree: collapse", bind: "left", run: nav.toggle },
-        { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => nav.refresh() },
-        { id: "filetree.open", title: "File tree: open in editor", bind: "enter", run: () => nav.open() },
-        { id: "filetree.send", title: "File tree: send to session", bind: "s", run: () => nav.send() },
-        // esc hands the keyboard back instead of closing anything.
-        {
-          id: "filetree.close",
-          title: "File tree: return focus",
-          bind: "escape",
-          run: () => treeRoot?.blur(),
-        },
-      ],
-      bindings: [
-        "filetree.up",
-        "filetree.down",
-        "filetree.expand",
-        "filetree.collapse",
-        "filetree.refresh",
-        "filetree.open",
-        "filetree.send",
-        "filetree.close",
-      ],
-    }))
+    try {
+      context.keymap.layer(() => {
+        trace("layer.factory", { layer: "nav" })
+        return {
+          enabled: () => focusedWithinTree(),
+          commands: [
+            {
+              id: "filetree.up",
+              title: "File tree: move up",
+              bind: "up",
+              run: () => {
+                trace("nav.run", { id: "up" })
+                nav.move(-1)
+              },
+            },
+            { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => nav.move(1) },
+            { id: "filetree.expand", title: "File tree: expand", bind: "right", run: nav.toggle },
+            { id: "filetree.collapse", title: "File tree: collapse", bind: "left", run: nav.toggle },
+            { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => nav.refresh() },
+            { id: "filetree.open", title: "File tree: open in editor", bind: "enter", run: () => nav.open() },
+            { id: "filetree.send", title: "File tree: send to session", bind: "s", run: () => nav.send() },
+            // esc hands the keyboard back instead of closing anything.
+            {
+              id: "filetree.close",
+              title: "File tree: return focus",
+              bind: "escape",
+              run: () => {
+                trace("nav.run", { id: "escape" })
+                treeRoot?.blur()
+              },
+            },
+          ],
+          bindings: [
+            "filetree.up",
+            "filetree.down",
+            "filetree.expand",
+            "filetree.collapse",
+            "filetree.refresh",
+            "filetree.open",
+            "filetree.send",
+            "filetree.close",
+          ],
+        }
+      })
+      trace("layer.registered", { layer: "nav" })
+    } catch (error) {
+      trace("layer.threw", { layer: "nav", error: String(error) })
+    }
 
     return () => {
       unregisterSlot()
