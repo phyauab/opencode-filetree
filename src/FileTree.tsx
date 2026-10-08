@@ -27,6 +27,19 @@ type FileTreeProps = {
    * yields a different Solid context object than the host's.
    */
   context: Context
+  /**
+   * Receives the tree's root box. In the sidebar placement the keyboard is
+   * gated on that box holding focus, so the entry needs the renderable to
+   * focus it (ctrl+e), blur it (esc) and to recognise it in the focus chain.
+   */
+  onRoot?: (el: TreeRootBox) => void
+}
+
+/** The slice of the root renderable the focus gate touches. */
+export type TreeRootBox = {
+  focus(): void
+  blur(): void
+  parent?: TreeRootBox | null
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
@@ -314,7 +327,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    <box focusable onMouseDown={onClick}>
+    <box focusable ref={props.onRoot} onMouseDown={onClick}>
       <Show
         when={rows().total > 0}
         fallback={

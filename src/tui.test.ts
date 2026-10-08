@@ -8,7 +8,7 @@ type AnyFn = (...args: any[]) => any
 // registered, and no test was watching for it.
 const itRender = it
 
-const PANEL = "filetree.tree"
+/** Milliseconds of filesystem quiet before the tree re-reads. */
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
@@ -23,15 +23,12 @@ const entries = (n: number) =>
   }))
 
 /** Captures what the plugin registers, and lets a test make calls fail. */
-function createMockContext(options: { panelOpen?: boolean; promptFails?: boolean } = {}) {
+function createMockContext(options: { promptFails?: boolean } = {}) {
   const slots: { claim: any }[] = []
   const layers: { factory: AnyFn }[] = []
   const pushed: string[] = []
-  const opened: string[] = []
   const prompts: { sessionID: string; text: string }[] = []
   const toasts: { message: string; variant: string }[] = []
-  let closed = 0
-  let isOpen = options.panelOpen === true
 
   const context: any = {
     options: {},
@@ -57,18 +54,6 @@ function createMockContext(options: { panelOpen?: boolean; promptFails?: boolean
         },
       },
       format: { path: (v: string) => v },
-      panel: {
-        open: (name: string) => {
-          opened.push(name)
-          isOpen = true
-          return true
-        },
-        close: () => {
-          closed++
-          isOpen = false
-        },
-        current: () => (isOpen ? { name: PANEL, sessionID: "ses_1" } : undefined),
-      },
     },
     keymap: {
       layer: (factory: AnyFn) => layers.push({ factory }),
@@ -83,7 +68,7 @@ function createMockContext(options: { panelOpen?: boolean; promptFails?: boolean
     storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
     data: { on: () => () => {}, listen: () => {} },
     theme: {},
-    renderer: {},
+    renderer: { currentFocusedRenderable: null },
   }
 
   const allCommands = () =>
@@ -97,87 +82,116 @@ function createMockContext(options: { panelOpen?: boolean; promptFails?: boolean
     slots,
     layers,
     pushed,
-    opened,
     prompts,
     toasts,
-    closedCount: () => closed,
     allCommands,
     /**
+     * Renders the sidebar claim. The sidebar input carries the sessionID
+     * directly; the tree element comes back as the claim's own result.
+     */
+    renderSidebar: (sessionID = "ses_1") =>
+      slots[0].claim.render({ sessionID }) as any,
+    /** A stand-in for the tree's root renderable, handed over by its ref. */
+    rootBox: () => {
+      const box: any = {
+        focused: false,
+        parent: null,
+        focus() {
+          box.focused = true
+          context.renderer.currentFocusedRenderable = box
+        },
+        blur() {
+          box.focused = false
+          if (context.renderer.currentFocusedRenderable === box) {
+            context.renderer.currentFocusedRenderable = null
+          }
+        },
+      }
+      const tree = slots[0].claim.render({ sessionID: "ses_1" })
+      tree.props.onRoot(box)
+      return box
+    },
+    /** Puts the focus inside the tree, the way a click on a row does. */
+    focusTree: (box: any) => {
+      context.renderer.currentFocusedRenderable = { parent: box, focused: true }
+    },
+    /** Puts the focus somewhere else entirely: the prompt, the session list. */
+    focusElsewhere: () => {
+      context.renderer.currentFocusedRenderable = { parent: null, focused: true }
+    },
+    /**
      * Reaches the tree state the way the host reaches it: by rendering the
-     * panel slot and reading the state off the component it returns.
+     * sidebar slot and reading the state off the component it returns.
      */
     panelState: (count = 20) => {
-      const show = slots[0].claim.render({ name: PANEL, sessionID: "ses_1" }) as any
-      const state = show.props.children.props.state
+      const tree = slots[0].claim.render({ sessionID: "ses_1" }) as any
+      const state = tree.props.state
       state.setEntries(entries(count))
       return state
     },
-    /** Mounts the panel, as `panel.close()` + `panel.open()` makes the host do. */
-    mountPanel: () => {
-      isOpen = true
-      slots[0].claim.render({ name: PANEL, sessionID: "ses_1" })
-    },
-    renderPanel: (input: { name: string; sessionID?: string }) =>
-      slots[0].claim.render(input),
     command: (id: string) => allCommands().find((c: any) => c.id === id),
   }
 }
 
-describe("plugin entry", () => {
+describe("plugin entry (sidebar spike)", () => {
   const load = () => import("./tui")
 
-  itRender("claims the session.panel slot, not the sidebar", async () => {
+  itRender("claims the sidebar.content slot", async () => {
     const { default: mod } = await load()
     const { context, slots } = createMockContext()
     await mod.setup(context)
 
-    // A panel is the documented surface for interactive plugin UI: the host owns
-    // sizing, focus and input scope. The sidebar slot offers neither, which is
-    // why nothing the plugin changed was ever painted or keyed.
+    // The spike: the tree lives in the session sidebar, appended after the
+    // host's own sidebar plugins, so it renders below the "Context" card.
     expect(slots).toHaveLength(1)
-    expect(slots[0].claim.append).toBe("session.panel")
+    expect(slots[0].claim.append).toBe("sidebar.content")
   })
 
-  itRender("renders the panel content only for its own name", async () => {
+  itRender("renders the tree for the sidebar's session", async () => {
     const { default: mod } = await load()
     const { context, slots } = createMockContext()
     await mod.setup(context)
 
-    // Another plugin's panel must not render the tree.
-    const other = slots[0].claim.render({ name: "acme.review", sessionID: "ses_1" })
-    expect(typeof other.type).toBe("function")
-
-    // The tree's own panel renders a component, not text.
-    const ours = slots[0].claim.render({ name: "filetree.tree", sessionID: "ses_1" })
-    expect(typeof ours.type).toBe("function")
+    const tree = slots[0].claim.render({ sessionID: "ses_1" })
+    expect(typeof tree.type).toBe("function")
   })
 
-  itRender("opens and closes the panel from one command", async () => {
+  itRender("ctrl+e focuses the tree when the focus is elsewhere", async () => {
     const { default: mod } = await load()
-    const { context, allCommands, opened } = createMockContext()
-    await mod.setup(context)
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const root = m.rootBox()
 
-    const toggle = allCommands().find((c: any) => c.id === "filetree.toggle")!
-    expect(toggle).toBeDefined()
-    expect(toggle.palette).toBe(true)
+    // Focus starts outside the tree; ctrl+e must move it onto the tree, the way
+    // a click on a row would.
+    m.focusElsewhere()
+    m.command("filetree.focus")!.run()
 
-    toggle.run()
-    expect(opened).toEqual(["filetree.tree"])
+    expect(root.focused).toBe(true)
+    expect(m.context.renderer.currentFocusedRenderable).toBe(root)
   })
 
-  itRender("closes an open panel instead of reopening it", async () => {
+  itRender("ctrl+e hands the keyboard back when the tree holds focus", async () => {
     const { default: mod } = await load()
-    const { context, allCommands, opened, closedCount } = createMockContext({
-      panelOpen: true,
-    })
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const root = m.rootBox()
+
+    m.focusTree(root)
+    m.command("filetree.focus")!.run()
+
+    expect(root.focused).toBe(false)
+  })
+
+  itRender("binds ctrl+e to the focus command", async () => {
+    const { default: mod } = await load()
+    const { context, allCommands } = createMockContext()
     await mod.setup(context)
 
-    allCommands()
-      .find((c: any) => c.id === "filetree.toggle")!
-      .run()
-
-    expect(closedCount()).toBe(1)
-    expect(opened).toEqual([])
+    const focus = allCommands().find((c: any) => c.id === "filetree.focus")!
+    expect(focus).toBeDefined()
+    expect(focus.bind).toBe("ctrl+e")
+    expect(focus.palette).toBe(true)
   })
 
   itRender("registers each navigation command exactly once", async () => {
@@ -195,144 +209,119 @@ describe("plugin entry", () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  itRender("disables the navigation keys while the panel is closed", async () => {
+  itRender("disables the navigation keys while the focus is outside the tree", async () => {
     const { default: mod } = await load()
-    const { context, layers } = createMockContext({ panelOpen: false })
-    await mod.setup(context)
+    const m = createMockContext()
+    await mod.setup(m.context)
 
-    const nav = layers.find((l) =>
+    const nav = m.layers.find((l) =>
       (l.factory().commands ?? []).some((c: any) => c.id === "filetree.down"),
     )
     expect(nav).toBeDefined()
-    // While the panel is closed the host is typing into the prompt, so the
-    // plugin's bindings must not fire.
+
+    // While the prompt or the session list holds the focus, the plugin's
+    // bindings must not fire: the sidebar attempt originally died by taking
+    // over the host's keyboard.
+    m.focusElsewhere()
     expect(nav!.factory().enabled()).toBe(false)
   })
 
-  itRender("enables the navigation keys while the panel is open", async () => {
+  itRender("enables the navigation keys while the focus is inside the tree", async () => {
     const { default: mod } = await load()
-    const { context, layers } = createMockContext({ panelOpen: true })
-    await mod.setup(context)
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const root = m.rootBox()
 
-    const nav = layers.find((l) =>
+    const nav = m.layers.find((l) =>
       (l.factory().commands ?? []).some((c: any) => c.id === "filetree.down"),
     )
+    m.focusTree(root)
     expect(nav!.factory().enabled()).toBe(true)
-  })
-
-  itRender("binds ctrl+e to the panel toggle", async () => {
-    const { default: mod } = await load()
-    const { context, allCommands } = createMockContext()
-    await mod.setup(context)
-
-    // Reaching for ctrl+p and the palette for every open was the complaint;
-    // ctrl+e is unbound in the host's defaults (checked the full list), and it
-    // is the convention VS Code uses for a file explorer.
-    expect(allCommands().find((c: any) => c.id === "filetree.toggle")!.bind).toBe("ctrl+e")
   })
 
   itRender("one keypress moves the cursor exactly one row", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
     // The navigation layer used to be registered from the panel component, so
     // each remount added another copy of every binding and a single keypress ran
     // one handler per copy, walking the cursor several rows at a time.
-    for (let i = 0; i < 4; i++) m.mountPanel()
+    const root = m.rootBox()
+    for (let i = 0; i < 4; i++) m.renderSidebar()
+    m.focusTree(root)
     state.setCursor(0)
     m.command("filetree.down")!.run()
 
     expect(state.cursor()).toBe(1)
   })
 
-itRender("renders the panel as many times as the host asks without adding layers", async () => {
+  itRender("renders the sidebar as many times as the host asks without adding layers", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const before = m.layers.length
 
-    // The host calls the slot render again every time the panel is mounted, and
-    // a session mounts it more than once. Registering keymap layers from it is
-    // what leaked a duplicate copy of every binding.
-    for (let i = 0; i < 8; i++) m.mountPanel()
+    // The host calls the slot render again every time the sidebar re-renders,
+    // and a session re-renders more than once. Registering keymap layers from it
+    // is what leaked a duplicate copy of every binding.
+    for (let i = 0; i < 8; i++) m.renderSidebar()
 
     expect(m.layers.length).toBe(before)
   })
 
-  itRender("moving the cursor never closes and reopens the panel", async () => {
+  itRender("moving the cursor never touches the focus", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
+    const root = m.rootBox()
 
-    // Closing the panel and opening it again is the flash the user sees: the
-    // whole screen is torn down and rebuilt to move a selection marker one row.
-    // The rows already re-render themselves in place, so the panel must be left
-    // alone entirely.
+    // Nothing may steal the focus to show a change: the rows repaint in place.
+    m.focusTree(root)
     state.setCursor(0)
     m.command("filetree.down")!.run()
     m.command("filetree.down")!.run()
     await wait(160)
 
-    expect(m.closedCount()).toBe(0)
-    expect(m.opened).toEqual([])
+    expect(m.context.renderer.currentFocusedRenderable?.parent).toBe(root)
     expect(state.cursor()).toBe(2)
   })
 
-  itRender("expanding a folder never closes and reopens the panel", async () => {
+  itRender("expanding a folder never touches the focus", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
+    const root = m.rootBox()
 
+    m.focusTree(root)
     state.setCursor(0)
     m.command("filetree.expand")!.run()
     m.command("filetree.expand")!.run()
     m.command("filetree.expand")!.run()
     await wait(160)
 
-    expect(m.closedCount()).toBe(0)
-    expect(m.opened).toEqual([])
+    expect(m.context.renderer.currentFocusedRenderable?.parent).toBe(root)
+    expect([...state.expanded()]).toEqual(["/proj/f0"])
   })
 
-  itRender("escape closes the panel and a pending repaint does not reopen it", async () => {
+  itRender("escape returns focus without closing anything", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
-    m.panelState()
+    const root = m.rootBox()
 
-    // Move the cursor, then close the panel. An earlier version armed a repaint on
-    // every change, and it fired after the user had closed the panel, reopening
-    // it and making escape look like it did nothing.
-    m.command("filetree.down")!.run()
-    await wait(10)
+    m.focusTree(root)
     m.command("filetree.close")!.run()
-    expect(m.closedCount()).toBe(1)
 
-    await wait(160)
-    expect(m.opened).toEqual([])
-  })
-
-  itRender("the toggle closes without a pending repaint reopening it", async () => {
-    const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
-    await mod.setup(m.context)
-    m.panelState()
-
-    m.command("filetree.down")!.run()
-    await wait(10)
-    m.command("filetree.toggle")!.run()
-    expect(m.closedCount()).toBe(1)
-
-    await wait(160)
-    expect(m.opened).toEqual([])
+    expect(root.focused).toBe(false)
   })
 
   itRender("enter on a file spawns the editor without touching the expansion", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
@@ -355,7 +344,7 @@ itRender("renders the panel as many times as the host asks without adding layers
 
   itRender("toasts instead of throwing when the editor cannot be spawned", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
@@ -377,7 +366,7 @@ itRender("renders the panel as many times as the host asks without adding layers
 
   itRender("enter expands a folder instead of launching the editor", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
@@ -387,31 +376,11 @@ itRender("renders the panel as many times as the host asks without adding layers
     await wait(120)
 
     expect([...state.expanded()]).toEqual(["/proj/f0"])
-    // The rows re-render themselves; the panel must not be torn down to show it.
-    expect(m.closedCount()).toBe(0)
-    expect(m.opened).toEqual([])
   })
 
-itRender("s uses the session that owns the file tree panel", async () => {
+  itRender("s uses the session the sidebar claim carries", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
-    await mod.setup(m.context)
-    const state = m.panelState()
-
-    // The slot is appended to every panel in the session, so a neighbouring
-    // panel must not redirect the prompt somewhere else.
-    m.renderPanel({ name: "acme.review", sessionID: "ses_OTHER" })
-
-    state.setCursor(1)
-    m.command("filetree.send")!.run()
-    await wait(20)
-
-    expect(m.prompts).toEqual([{ sessionID: "ses_1", text: "Read /proj/f1" }])
-  })
-
-  itRender("s sends the selected path to the session", async () => {
-    const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true })
+    const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
@@ -424,7 +393,7 @@ itRender("s uses the session that owns the file tree panel", async () => {
 
   itRender("toasts instead of throwing when the prompt is rejected", async () => {
     const { default: mod } = await load()
-    const m = createMockContext({ panelOpen: true, promptFails: true })
+    const m = createMockContext({ promptFails: true })
     await mod.setup(m.context)
     const state = m.panelState()
 
@@ -464,7 +433,7 @@ itRender("s uses the session that owns the file tree panel", async () => {
     expect(pushed).toEqual([])
   })
 
-  itRender("cleanup unregisters the panel", async () => {
+  itRender("cleanup unregisters the slot", async () => {
     const { default: mod } = await load()
     let unregistered = false
     const { context } = createMockContext()

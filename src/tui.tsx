@@ -1,11 +1,22 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
-import { Show } from "solid-js"
 import { createTreeCommands, spawnEditor, promptSession } from "./commands"
 
-/** Panel name, used as the shared selection value for session.panel. */
-const PANEL = "filetree.tree"
+/**
+ * SPIKE — throwaway. This is the sidebar-placement probe: the tree renders into
+ * the session sidebar (below the "Context" card) instead of a side panel, so it
+ * is always visible and never changes the layout. See
+ * docs/superpowers/plans/2026-10-08-sidebar-spike.md for what it tests and what
+ * to look for. Nothing here is a decision to keep.
+ */
+
+/** Minimal shape of the tree's root renderable, for focus gating. */
+type TreeRoot = {
+  focus(): void
+  blur(): void
+  parent?: TreeRoot | null
+}
 
 export default Plugin.define({
   id: "filetree",
@@ -16,6 +27,23 @@ export default Plugin.define({
       context.ui.toast.show({ message, variant })
 
     let sessionID: string | undefined
+    /** The tree's root box, captured from the slot render's ref. */
+    let treeRoot: TreeRoot | undefined
+
+    /*
+     * Focus gating. Keys reach only the focused renderable, so the tree owns
+     * navigation exactly while the focus sits inside it: click a row to focus
+     * the tree, click elsewhere (or press esc) to hand the keyboard back. This
+     * replaces the panel's `panel.current()` gate — there is no panel here.
+     */
+    const focusedWithinTree = () => {
+      let current: TreeRoot | null | undefined = context.renderer?.currentFocusedRenderable
+      while (current) {
+        if (current === treeRoot) return true
+        current = current.parent
+      }
+      return false
+    }
 
     const tree = createTreeCommands({
       visibleNodes: state.visibleNodes,
@@ -35,8 +63,8 @@ export default Plugin.define({
     /*
      * Navigation actions, bound to keys below.
      *
-     * These only change state. None of them touch the panel: an earlier version
-     * closed and reopened it on every change to force a repaint, which is exactly
+     * These only change state. None of them touch the layout: an earlier version
+     * closed and reopened the panel on every change to force a repaint, which is
      * what the user saw as a flash -- the whole screen torn down and rebuilt to
      * move a selection marker one row. Repainting is `renderer.requestRender()`
      * in one effect inside FileTree, so it covers keys, clicks, the file watcher
@@ -56,43 +84,51 @@ export default Plugin.define({
       send: () => tree.send(),
     }
 
-    const unregisterPanel = context.ui.slot({
-      append: "session.panel",
-      render: (input: { name: string; sessionID?: string }) => {
-        // The slot is appended to every panel in the session, so only this
-        // panel's own input may set the session; a neighbouring panel would
-        // otherwise redirect a prompt into the wrong conversation.
-        if (input.name === PANEL && input.sessionID) sessionID = input.sessionID
+    /*
+     * Sidebar placement. The slot input carries the sessionID directly, and the
+     * claim is appended after the host's own sidebar plugins, so the tree lands
+     * below the "Context" card. The repaint effect inside FileTree is
+     * renderer-global, which is what makes a live tree in the sidebar possible:
+     * the first attempt at a sidebar tree died precisely because nothing asked
+     * the renderer for a frame.
+     */
+    const unregisterSlot = context.ui.slot({
+      append: "sidebar.content",
+      render: (input: { sessionID: string }) => {
+        if (input.sessionID) sessionID = input.sessionID
         return (
-          <Show when={input.name === PANEL}>
-            <FileTree state={state} context={context} />
-          </Show>
+          <FileTree
+            state={state}
+            context={context}
+            onRoot={(el: TreeRoot) => {
+              treeRoot = el
+            }}
+          />
         )
       },
     })
 
-    // Open the panel. The host scopes input and focus to it, which is what the
-    // sidebar slot never did.
+    /*
+     * ctrl+e focuses the tree, or hands the keyboard back when it already has
+     * it. There is nothing to open or close: the tree is always there.
+     */
     context.keymap.layer(() => ({
       mode: "global",
       commands: [
         {
-          id: "filetree.toggle",
+          id: "filetree.focus",
           title: "File tree",
           group: "File tree",
           palette: true,
           suggested: true,
-          // ctrl+e, the explorer convention, so the tree is one keypress away
-          // instead of a trip through the palette. It is unbound in the host's
-          // defaults, and `filetree.toggle` stays rebindable by id.
           bind: "ctrl+e",
           run: () => {
-            if (context.ui.panel.current()?.name === PANEL) context.ui.panel.close()
-            else context.ui.panel.open(PANEL)
+            if (focusedWithinTree()) treeRoot?.blur()
+            else treeRoot?.focus()
           },
         },
       ],
-      bindings: ["filetree.toggle"],
+      bindings: ["filetree.focus"],
     }))
 
     /*
@@ -102,10 +138,11 @@ export default Plugin.define({
      * host held five enabled `filetree.down` handlers, so one keypress moved the
      * cursor five rows, and the suite's own note on duplicate ids says the host
      * throws outright. The `enabled` predicate carries the scoping instead --
-     * the bindings only fire while the host says this panel owns input.
+     * the bindings only fire while the focus is inside the tree, so the session
+     * list and the prompt keep their own arrow keys.
      */
     context.keymap.layer(() => ({
-      enabled: () => context.ui.panel.current()?.name === PANEL,
+      enabled: () => focusedWithinTree(),
       commands: [
         { id: "filetree.up", title: "File tree: move up", bind: "up", run: () => nav.move(-1) },
         { id: "filetree.down", title: "File tree: move down", bind: "down", run: () => nav.move(1) },
@@ -114,7 +151,13 @@ export default Plugin.define({
         { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => nav.refresh() },
         { id: "filetree.open", title: "File tree: open in editor", bind: "enter", run: () => nav.open() },
         { id: "filetree.send", title: "File tree: send to session", bind: "s", run: () => nav.send() },
-        { id: "filetree.close", title: "File tree: close", bind: "escape", run: () => context.ui.panel.close() },
+        // esc hands the keyboard back instead of closing anything.
+        {
+          id: "filetree.close",
+          title: "File tree: return focus",
+          bind: "escape",
+          run: () => treeRoot?.blur(),
+        },
       ],
       bindings: [
         "filetree.up",
@@ -129,7 +172,7 @@ export default Plugin.define({
     }))
 
     return () => {
-      unregisterPanel()
+      unregisterSlot()
     }
   },
 })
