@@ -109,8 +109,14 @@ export default Plugin.define({
     })
 
     /*
-     * ctrl+e focuses the tree, or hands the keyboard back when it already has
+     * ctrl+y focuses the tree, or hands the keyboard back when it already has
      * it. There is nothing to open or close: the tree is always there.
+     *
+     * ctrl+e was the first choice and it silently did nothing: the host binds
+     * it as `input.line.end` ("move to end of line"), so the prompt editor
+     * consumed every press. ctrl+y appears nowhere in the host's default
+     * keybind map -- verified against the complete map, input.* section
+     * included -- and stays rebindable by command id (`filetree.focus`).
      */
     context.keymap.layer(() => ({
       mode: "global",
@@ -121,7 +127,7 @@ export default Plugin.define({
           group: "File tree",
           palette: true,
           suggested: true,
-          bind: "ctrl+e",
+          bind: "ctrl+y",
           run: () => {
             if (focusedWithinTree()) treeRoot?.blur()
             else treeRoot?.focus()

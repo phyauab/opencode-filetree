@@ -156,7 +156,7 @@ describe("plugin entry (sidebar spike)", () => {
     expect(typeof tree.type).toBe("function")
   })
 
-  itRender("ctrl+e focuses the tree when the focus is elsewhere", async () => {
+  itRender("ctrl+y focuses the tree when the focus is elsewhere", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
@@ -171,7 +171,7 @@ describe("plugin entry (sidebar spike)", () => {
     expect(m.context.renderer.currentFocusedRenderable).toBe(root)
   })
 
-  itRender("ctrl+e hands the keyboard back when the tree holds focus", async () => {
+  itRender("ctrl+y hands the keyboard back when the tree holds focus", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
@@ -183,14 +183,16 @@ describe("plugin entry (sidebar spike)", () => {
     expect(root.focused).toBe(false)
   })
 
-  itRender("binds ctrl+e to the focus command", async () => {
+  itRender("binds ctrl+y to the focus command", async () => {
     const { default: mod } = await load()
     const { context, allCommands } = createMockContext()
     await mod.setup(context)
 
     const focus = allCommands().find((c: any) => c.id === "filetree.focus")!
     expect(focus).toBeDefined()
-    expect(focus.bind).toBe("ctrl+e")
+    // ctrl+e is `input.line.end` in the host's defaults, so the prompt editor
+    // swallows it; ctrl+y appears nowhere in the host's keybind map.
+    expect(focus.bind).toBe("ctrl+y")
     expect(focus.palette).toBe(true)
   })
 

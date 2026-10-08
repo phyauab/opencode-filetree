@@ -14,8 +14,10 @@ instead of a side panel, so it is always visible and never changes the layout?
   enabled exactly while `renderer.currentFocusedRenderable` is the tree's root
   box or a descendant of it. Click a row to focus the tree; `esc` (or clicking
   elsewhere) hands the keyboard back.
-- `ctrl+e` now *focuses* the tree (or blurs it when it already has focus) —
-  there is nothing to open or close.
+- `ctrl+y` now *focuses* the tree (or blurs it when it already has focus) —
+  there is nothing to open or close. (`ctrl+e` was tried first and silently did
+  nothing: the host binds it as `input.line.end`, so the prompt editor consumed
+  it. `ctrl+y` appears nowhere in the host's keybind map.)
 - FileTree's existing repaint effect (`renderer.requestRender()`) is untouched;
   it is renderer-global, so it covers the sidebar too. This is the piece the
   original sidebar attempt lacked.

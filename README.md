@@ -60,16 +60,16 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Open the file tree panel with **`ctrl+e`** — one keypress, no palette needed.
+Open the file tree panel with **`ctrl+y`** — one keypress, no palette needed.
 It is also in the command palette (`ctrl+p`, **File tree**, in the "File tree"
-group) and the suggested list. `ctrl+e` again closes it.
+group) and the suggested list. `ctrl+y` again closes it.
 
 While the panel is open the host owns its input, so these keys go to the tree:
 
 | Key | Action |
 |-----|--------|
-| `↑` / `↓` | Move selection |
-| `→` / `←` | Expand or collapse folder |
+| `?�` / `?�` | Move selection |
+| `?�` / `?�` | Expand or collapse folder |
 | `enter` | Open the selected file in `$EDITOR`, or expand a folder |
 | `s` | Send the selected path to the session |
 | `r` | Refresh |
@@ -81,13 +81,13 @@ nothing. The selected row is highlighted rather than marked with a character,
 and the tree also re-reads itself when files change on disk.
 
 Rows never wrap: a name too long for the width is truncated at the row's edge,
-so the tree keeps one line per entry whatever the container's width — a
+so the tree keeps one line per entry whatever the container's width ??a
 42-column sidebar or a half-screen panel alike.
 
 ## Panel width
 
 The panel opens in the host's right pane, which defaults to half the session
-width. The host owns that width — no plugin API can set it — but it is easy to
+width. The host owns that width ??no plugin API can set it ??but it is easy to
 change by hand:
 
 - **Drag the panel's left edge** left or right. There is a resize handle on the
@@ -106,7 +106,7 @@ its own keymap layer. That does not work, and the reason is worth recording.
 
 OpenCode documents `session.panel` as the surface for interactive plugin UI:
 *"The host owns sizing, focus, and full-screen presentation."* The sidebar slot
-carries only a `sessionID` — the plugin gets no ownership of input, focus, or
+carries only a `sessionID` ??the plugin gets no ownership of input, focus, or
 repaints.
 
 Diagnostics proved the sidebar approach was a dead end. A trace file written by
@@ -118,11 +118,11 @@ the plugin showed, over a real session:
 ```
 
 Every one of 28 clicks registered, the cursor updated correctly, and clicking a
-folder really did expand it (the visible row count went 16 → 41). The panel just
+folder really did expand it (the visible row count went 16 ??41). The panel just
 never repainted to show it. The same held for keyboard input: keys arrived and
 state changed, nothing was drawn.
 
-Pushing an input mode made it worse — it took over the host's key routing, and
+Pushing an input mode made it worse ??it took over the host's key routing, and
 afterwards no key reached anything until the user clicked the UI. Moving renderer
 focus took the prompt's cursor away and delayed typing on the way back. Both are
 in the git history.
@@ -165,7 +165,7 @@ are dropped from the remembered layout rather than restored as broken rows.
 
 OpenTUI's renderer is demand-driven: it draws a frame when something asks it to,
 and changing a plugin's own state is not something it asks about. So the tree
-changes, Solid updates the rows, and — unless a frame is requested — the panel
+changes, Solid updates the rows, and ??unless a frame is requested ??the panel
 goes on showing exactly what it showed before. The state underneath is correct,
 which is why this presented as a state bug rather than a rendering one.
 
@@ -182,13 +182,13 @@ keypress.
 
 This mattered more than anything above. `tsc` cannot compile Solid JSX. Its JSX
 modes emit `jsx(type, props)` with props as a plain object, and a Solid component
-reads its props from inside a memo — so a plain object gives it no dependency and
+reads its props from inside a memo ??so a plain object gives it no dependency and
 it never re-run. A tsc-built plugin is completely inert: state changes, nothing on
 screen does.
 
 `scripts/build.mjs` therefore compiles the JS with `babel-preset-solid`, which
 wraps props in getters, and leaves `tsc` to declarations only. The difference is
-whether `dist/FileTree.js` contains `get when() { … }` or `when: snapshot()`.
+whether `dist/FileTree.js` contains `get when() { ??}` or `when: snapshot()`.
 
 ## Large trees
 
@@ -201,7 +201,7 @@ the panel does not re-walk the directory or re-run `git status`.
 
 ## When something goes wrong
 
-A directory that cannot be read — no permission, or deleted while open — shows
+A directory that cannot be read ??no permission, or deleted while open ??shows
 its reason inline instead of taking down the TUI. If `$EDITOR` cannot be
 spawned, or a file cannot be sent to the session, you get an error toast rather
 than a crash.
@@ -217,7 +217,7 @@ bun run build     # compile to dist/
 **A rebuild needs a full OpenCode restart.** The plugin is loaded once, when the
 TUI starts. OpenCode's plugin hot reload watches the shim's entry file
 (`~/.config/opencode/plugins/filetree/tui.ts`), not the `dist/tui.js` it
-imports — so editing `dist/` (via `bun run build`) changes nothing until the
+imports ??so editing `dist/` (via `bun run build`) changes nothing until the
 process restarts, and the old build keeps running with no error. If a change
 "isn't showing up", compare the OpenCode process start time against the
 `dist/` mtimes first.
