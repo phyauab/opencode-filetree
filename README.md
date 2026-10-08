@@ -77,8 +77,12 @@ While the panel is open the host owns its input, so these keys go to the tree:
 
 Clicking a row selects it, and clicking a folder expands or collapses it. The
 "more above/below" hints are part of the panel, not rows, so clicking one does
-nothing. The selected row is marked with `›`, and the tree also re-reads itself
-when files change on disk.
+nothing. The selected row is highlighted rather than marked with a character,
+and the tree also re-reads itself when files change on disk.
+
+Rows never wrap: a name too long for the width is truncated at the row's edge,
+so the tree keeps one line per entry whatever the container's width — a
+42-column sidebar or a half-screen panel alike.
 
 ## Panel width
 
