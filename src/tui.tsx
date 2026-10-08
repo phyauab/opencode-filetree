@@ -47,6 +47,23 @@ export default Plugin.define({
       return false
     }
 
+    /**
+     * Names whatever currently holds focus, for the trace.
+     *
+     * A user reporting "it works the first time and then not" is describing two
+     * different situations, and only the focus holder tells them apart: the tree
+     * blurred itself, or something else took the keyboard. The constructor name
+     * is enough to tell a host prompt editor from a session list.
+     */
+    const focusHolder = () => {
+      const current = context.renderer?.currentFocusedRenderable as
+        | { constructor?: { name?: string } }
+        | null
+        | undefined
+      if (!current) return "none"
+      return current.constructor?.name ?? "unknown"
+    }
+
     const tree = createTreeCommands({
       visibleNodes: state.visibleNodes,
       currentEntry: state.currentEntry,
@@ -121,15 +138,43 @@ export default Plugin.define({
     trace("slot.claimed", { unregister: typeof unregisterSlot })
 
     /*
-     * ctrl+y focuses the tree, or hands the keyboard back when it already has
-     * it. There is nothing to open or close: the tree is always there.
+     * ctrl+y gives the keyboard to the tree. There is nothing to open or close:
+     * the tree is always there.
      *
      * ctrl+e was the first choice and it silently did nothing: the host binds
      * it as `input.line.end` ("move to end of line"), so the prompt editor
      * consumed every press. ctrl+y appears nowhere in the host's default
      * keybind map -- verified against the complete map, input.* section
      * included -- and stays rebindable by command id (`filetree.focus`).
+     *
+     * Not a toggle, which is the second thing that read as a broken key: the
+     * first press focused, the second blurred, and whether the second press
+     * blurred or focused again came down to whether the host had handed focus
+     * back in between. Same key, opposite results, neither reproducible. Now the
+     * key only ever means "the keyboard is mine", and is a no-op when the tree
+     * already has it. `esc` hands it back, and the hint line says so.
      */
+    const focusTheTree = () => {
+      const anyRoot = treeRoot as unknown as Record<string, unknown> | undefined
+      trace("focus.run", {
+        hasRoot: !!treeRoot,
+        withinTree: focusedWithinTree(),
+        rootFocusable: anyRoot?._focusable,
+        rootFocused: anyRoot?._focused,
+        rootDestroyed: anyRoot?._isDestroyed,
+        // Who holds focus right now. When this is not the prompt editor or the
+        // tree, the host moved focus on its own, which is what would make a
+        // press feel intermittent.
+        holder: focusHolder(),
+      })
+      treeRoot?.focus()
+      trace("focus.after", {
+        currentFocused: !!context.renderer?.currentFocusedRenderable,
+        withinTree: focusedWithinTree(),
+        holder: focusHolder(),
+      })
+    }
+
     try {
       context.keymap.layer(() => {
         trace("layer.factory", { layer: "focus" })
@@ -143,22 +188,7 @@ export default Plugin.define({
               palette: true,
               suggested: true,
               bind: "ctrl+y",
-              run: () => {
-                const anyRoot = treeRoot as unknown as Record<string, unknown> | undefined
-                trace("focus.run", {
-                  hasRoot: !!treeRoot,
-                  withinTree: focusedWithinTree(),
-                  rootFocusable: anyRoot?._focusable,
-                  rootFocused: anyRoot?._focused,
-                  rootDestroyed: anyRoot?._isDestroyed,
-                })
-                if (focusedWithinTree()) treeRoot?.blur()
-                else treeRoot?.focus()
-                trace("focus.after", {
-                  currentFocused: !!context.renderer?.currentFocusedRenderable,
-                  withinTree: focusedWithinTree(),
-                })
-              },
+              run: focusTheTree,
             },
           ],
           bindings: ["filetree.focus"],
@@ -207,7 +237,9 @@ export default Plugin.define({
               bind: "escape",
               run: () => {
                 trace("nav.run", { id: "escape" })
+                trace("blur.request", { holder: focusHolder(), withinTree: focusedWithinTree() })
                 treeRoot?.blur()
+                trace("blur.after", { holder: focusHolder(), withinTree: focusedWithinTree() })
               },
             },
           ],

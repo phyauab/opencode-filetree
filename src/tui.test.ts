@@ -171,14 +171,30 @@ describe("plugin entry (sidebar spike)", () => {
     expect(m.context.renderer.currentFocusedRenderable).toBe(root)
   })
 
-  itRender("ctrl+y hands the keyboard back when the tree holds focus", async () => {
+  itRender("ctrl+y is a no-op when the tree already holds the keyboard", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const root = m.rootBox()
+
+    // A toggle made this key look broken: the first press focused, the second
+    // blurred, and whether the second press blurred or focused again depended on
+    // whether the host had handed focus back in between. Same key, two opposite
+    // results. ctrl+y now only ever means "the tree has the keyboard".
+    m.focusTree(root)
+    m.command("filetree.focus")!.run()
+
+    expect(root.focused).toBe(true)
+  })
+
+  itRender("esc hands the keyboard back", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
     const root = m.rootBox()
 
     m.focusTree(root)
-    m.command("filetree.focus")!.run()
+    m.command("filetree.close")!.run()
 
     expect(root.focused).toBe(false)
   })

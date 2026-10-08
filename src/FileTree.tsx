@@ -51,6 +51,20 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   // `root.ref` line means the renderable never mounted.
   trace("filetree.body")
 
+  /*
+   * Names the renderable that currently holds focus, for the trace. Only the
+   * constructor name: enough to tell a host prompt editor or session list from
+   * our own box, which is all the "works once, then not" report needs.
+   */
+  const focusHolder = () => {
+    const current = context.renderer?.currentFocusedRenderable as
+      | { constructor?: { name?: string } }
+      | null
+      | undefined
+    if (!current) return "none"
+    return current.constructor?.name ?? "unknown"
+  }
+
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
   const [empty, setEmpty] = createSignal<EmptyReason>({ kind: "loading" })
@@ -97,18 +111,26 @@ export const FileTree: Component<FileTreeProps> = (props) => {
    * re-subscribe on every state change.
    */
   let watchingRoot = false
-  const captureRoot = (el: TreeRootBox) => {
-    props.onRoot?.(el)
-    const renderable = el as unknown as {
-      focused?: boolean
-      on?: (event: string, listener: () => void) => void
+    const captureRoot = (el: TreeRootBox) => {
+      props.onRoot?.(el)
+      const renderable = el as unknown as {
+        focused?: boolean
+        on?: (event: string, listener: () => void) => void
+      }
+      setFocused(renderable.focused === true)
+      if (watchingRoot) return
+      watchingRoot = true
+      renderable.on?.("focused", () => {
+        trace("root.focused", { holder: focusHolder() })
+        setFocused(true)
+      })
+      renderable.on?.("blurred", () => {
+        // Logged because the reported symptom -- works once, then not -- is
+        // only explicable by something taking the keyboard back. This says when.
+        trace("root.blurred", { holder: focusHolder() })
+        setFocused(false)
+      })
     }
-    setFocused(renderable.focused === true)
-    if (watchingRoot) return
-    watchingRoot = true
-    renderable.on?.("focused", () => setFocused(true))
-    renderable.on?.("blurred", () => setFocused(false))
-  }
 
   /**
    * Reads the project root into the tree, and marks it loaded on success only.
