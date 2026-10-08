@@ -68,7 +68,9 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
     data: { on: () => () => {}, listen: () => {} },
     theme: {},
-    renderer: { currentFocusedRenderable: null },
+    // The tree's repaint effect asks for a frame on mount, so a full renderer stand-in
+  // is needed once the component actually runs rather than just being described.
+  renderer: { currentFocusedRenderable: null, height: 40, requestRender: () => {} },
   }
 
   const allCommands = () =>
@@ -130,6 +132,29 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
       return state
     },
     command: (id: string) => allCommands().find((c: any) => c.id === id),
+    /** The navigation layer, the one whose `enabled` decides who owns the keys. */
+    navLayer: () => layers[1].factory(),
+    /** Is the navigation layer live right now? */
+    navEnabled: () => {
+      const nav = layers[1].factory()
+      return typeof nav.enabled === "function" ? nav.enabled() : nav.enabled
+    },
+    /**
+     * Clicks a row the way the host's hit grid reports it. The click lands on the
+     * tree's root box, which is the only renderable in the hit grid -- the same
+     * reason the real build handles clicks there.
+     */
+    clickTreeRow: (y: number) => {
+      // The slot render hands back the component and its props, so the tree's
+      // root box only exists once the component runs.
+      const element = slots[0].claim.render({ sessionID: "ses_1" }) as any
+      const box = element.type(element.props)
+      const target =
+        box.props.onMouseDown
+          ? box
+          : (box.props.children ?? []).find((c: any) => c?.props?.onMouseDown)
+      target.props.onMouseDown({ y })
+    },
   }
 }
 
@@ -193,10 +218,55 @@ describe("plugin entry (sidebar spike)", () => {
     await mod.setup(m.context)
     const root = m.rootBox()
 
-    m.focusTree(root)
+    m.command("filetree.focus")!.run()
+    expect(m.navEnabled()).toBe(true)
+
     m.command("filetree.close")!.run()
 
+    expect(m.navEnabled()).toBe(false)
     expect(root.focused).toBe(false)
+  })
+
+  itRender("keys stay with the tree even when the host takes focus back", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const root = m.rootBox()
+
+    // The host reclaims focus about a second later -- traced, three sessions
+    // running. Gating the nav layer on focus made the keys flap with it, which
+    // is the "works sometimes" report.
+    m.command("filetree.focus")!.run()
+    m.focusElsewhere()
+
+    expect(root.focused).toBe(true) // focus really was lost
+    expect(m.navEnabled()).toBe(true) // but the tree still owns the keys
+  })
+
+  itRender("clicking a row claims the keys", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    m.rootBox()
+
+    expect(m.navEnabled()).toBe(false)
+    m.clickTreeRow(1)
+    expect(m.navEnabled()).toBe(true)
+  })
+
+  itRender("outranks the host layer that binds down for session navigation", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    // The host registers `enabled: () => currentFocusedEditor === null`, and our
+    // box is not an editor, so that layer switches on when the tree takes focus.
+    // It binds down/up for session and subagent navigation. Layers resolve by
+    // priority descending, so without an explicit priority we lose those keys --
+    // which is what "press down and the subagent panel opens" was.
+    const nav = m.navLayer()
+    expect(nav.enabled?.()).toBe(false)
+    expect(nav.priority).toBeGreaterThan(0)
   })
 
   itRender("binds ctrl+y to the focus command", async () => {
@@ -227,7 +297,7 @@ describe("plugin entry (sidebar spike)", () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  itRender("disables the navigation keys while the focus is outside the tree", async () => {
+  itRender("holds the navigation keys off until the tree claims them", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
@@ -237,23 +307,24 @@ describe("plugin entry (sidebar spike)", () => {
     )
     expect(nav).toBeDefined()
 
-    // While the prompt or the session list holds the focus, the plugin's
-    // bindings must not fire: the sidebar attempt originally died by taking
-    // over the host's keyboard.
-    m.focusElsewhere()
+    // The sidebar attempt originally died by taking over the host's keyboard, so
+    // the bindings must stay dormant until something asks for them. Starting a
+    // session with the tree rendered must not mean the tree owns the keyboard.
     expect(nav!.factory().enabled()).toBe(false)
   })
 
-  itRender("enables the navigation keys while the focus is inside the tree", async () => {
+  itRender("enables the navigation keys once the tree has claimed them", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
-    const root = m.rootBox()
+    m.rootBox()
 
     const nav = m.layers.find((l) =>
       (l.factory().commands ?? []).some((c: any) => c.id === "filetree.down"),
     )
-    m.focusTree(root)
+    // Focus alone is not the gate any more: the host takes it back, and reading
+    // it made the keys flap. Claiming is explicit.
+    m.command("filetree.focus")!.run()
     expect(nav!.factory().enabled()).toBe(true)
   })
 

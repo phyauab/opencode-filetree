@@ -34,6 +34,12 @@ type FileTreeProps = {
    * focus it (ctrl+e), blur it (esc) and to recognise it in the focus chain.
    */
   onRoot?: (el: TreeRootBox) => void
+  /**
+   * Called when the user clicks the tree. Claims the navigation keys, which
+   * focus alone no longer does -- the host reclaims focus within a second, and
+   * the plugin owns that state instead (see `keysHeld` in `tui.tsx`).
+   */
+  onActivate?: () => void
 }
 
 /** The slice of the root renderable the focus gate touches. */
@@ -378,6 +384,11 @@ export const FileTree: Component<FileTreeProps> = (props) => {
    */
   const onClick = (event: { y: number }) => {
     trace("mouse.down", { y: event?.y })
+    // A click means the user wants to drive this tree, so it claims the keys as
+    // well as selecting the row. Clicking only for focus was not enough: the
+    // host hands focus back within a second, and the nav layer no longer reads
+    // focus to decide whether it is live.
+    props.onActivate?.()
     const view = state.viewport()
     // The hint line owns line 0 whether or not it is showing, so a click's y
     // maps to a row one line lower. Reserving the line always keeps every row

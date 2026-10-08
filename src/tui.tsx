@@ -33,11 +33,29 @@ export default Plugin.define({
     let treeRoot: TreeRoot | undefined
 
     /*
-     * Focus gating. Keys reach only the focused renderable, so the tree owns
-     * navigation exactly while the focus sits inside it: click a row to focus
-     * the tree, click elsewhere (or press esc) to hand the keyboard back. This
-     * replaces the panel's `panel.current()` gate — there is no panel here.
+     * Who owns the navigation keys. This is plugin state, deliberately not
+     * derived from renderer focus, because focus cannot be relied on here:
+     *
+     *   - The host registers a layer gated on `currentFocusedEditor === null`,
+     *     and that getter is null for *any* non-editor renderable, our box
+     *     included. Focusing the tree therefore switches the host's session
+     *     navigation on -- the layer that binds down/up for session and
+     *     subagent switching. That is the "press down, the subagent panel
+     *     opens" report, and no keybind of ours caused it.
+     *   - The host re-asserts focus on the prompt within about a second of the
+     *     tree taking it. Traced: `focus.run holder uA` -> `root.focused
+     *     holder ur` -> `root.blurred holder uA`, 1.3s later, repeatedly. Any
+     *     gate that reads focus therefore flaps, which is what made the
+     *     shortcut feel intermittent.
+     *
+     * So the tree keeps its own flag. ctrl+y claims the keys, esc and a click
+     * release them, and the nav layer reads this. Focus is still taken -- the
+     * border and hint line should reflect it -- but it is presentation, not
+     * the gate. A host that reclaims focus costs a dim border, not the keys.
      */
+    let keysHeld = false
+
+    /** Focus-gated, for the trace and for nothing that decides behaviour. */
     const focusedWithinTree = () => {
       let current: TreeRoot | null | undefined = context.renderer?.currentFocusedRenderable
       while (current) {
@@ -120,6 +138,13 @@ export default Plugin.define({
           <FileTree
             state={state}
             context={context}
+            // A click is a claim on the keyboard, not just a selection. Focus
+            // alone cannot carry that: the host takes focus back, and focus is
+            // not what decides the keys any more (see `keysHeld`).
+            onActivate={() => {
+              keysHeld = true
+              treeRoot?.focus()
+            }}
             onRoot={(el: TreeRoot) => {
               const anyEl = el as unknown as Record<string, unknown>
               trace("root.ref", {
@@ -158,6 +183,7 @@ export default Plugin.define({
       const anyRoot = treeRoot as unknown as Record<string, unknown> | undefined
       trace("focus.run", {
         hasRoot: !!treeRoot,
+        keysHeld,
         withinTree: focusedWithinTree(),
         rootFocusable: anyRoot?._focusable,
         rootFocused: anyRoot?._focused,
@@ -167,12 +193,22 @@ export default Plugin.define({
         // press feel intermittent.
         holder: focusHolder(),
       })
+      keysHeld = true
       treeRoot?.focus()
       trace("focus.after", {
+        keysHeld,
         currentFocused: !!context.renderer?.currentFocusedRenderable,
         withinTree: focusedWithinTree(),
         holder: focusHolder(),
       })
+    }
+
+    /** Hands the keys back, and the focus with them. */
+    const releaseTheKeys = () => {
+      trace("blur.request", { keysHeld, holder: focusHolder(), withinTree: focusedWithinTree() })
+      keysHeld = false
+      treeRoot?.blur()
+      trace("blur.after", { keysHeld, holder: focusHolder(), withinTree: focusedWithinTree() })
     }
 
     try {
@@ -209,11 +245,23 @@ export default Plugin.define({
      * the bindings only fire while the focus is inside the tree, so the session
      * list and the prompt keep their own arrow keys.
      */
+    /*
+     * `priority: 10` is load-bearing, not decoration.
+     *
+     * The host's own navigation layer is enabled whenever no *editor* holds
+     * focus, and our box is not an editor -- so it activates precisely when we
+     * take focus, and it binds down/up for session and subagent navigation.
+     * Layers resolve by `priority` descending, then registration order
+     * descending (`n.priority - t.priority || n.order - t.order`), so an
+     * explicit priority is the difference between owning those keys and
+     * watching the subagent panel open when the user presses down.
+     */
     try {
       context.keymap.layer(() => {
         trace("layer.factory", { layer: "nav" })
         return {
-          enabled: () => focusedWithinTree(),
+          enabled: () => keysHeld,
+          priority: 10,
           commands: [
             {
               id: "filetree.up",
@@ -235,12 +283,7 @@ export default Plugin.define({
               id: "filetree.close",
               title: "File tree: return focus",
               bind: "escape",
-              run: () => {
-                trace("nav.run", { id: "escape" })
-                trace("blur.request", { holder: focusHolder(), withinTree: focusedWithinTree() })
-                treeRoot?.blur()
-                trace("blur.after", { holder: focusHolder(), withinTree: focusedWithinTree() })
-              },
+              run: releaseTheKeys,
             },
           ],
           bindings: [
