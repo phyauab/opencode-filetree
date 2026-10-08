@@ -60,8 +60,9 @@ OpenCode rewrites a fixed list of bare specifiers and
 
 ## Usage
 
-Open the file tree panel from the command palette (`ctrl+p`, **File tree**, in the
-"File tree" group) or the suggested list.
+Open the file tree panel with **`ctrl+e`** — one keypress, no palette needed.
+It is also in the command palette (`ctrl+p`, **File tree**, in the "File tree"
+group) and the suggested list. `ctrl+e` again closes it.
 
 While the panel is open the host owns its input, so these keys go to the tree:
 
@@ -78,6 +79,21 @@ Clicking a row selects it, and clicking a folder expands or collapses it. The
 "more above/below" hints are part of the panel, not rows, so clicking one does
 nothing. The selected row is marked with `›`, and the tree also re-reads itself
 when files change on disk.
+
+## Panel width
+
+The panel opens in the host's right pane, which defaults to half the session
+width. The host owns that width — no plugin API can set it — but it is easy to
+change by hand:
+
+- **Drag the panel's left edge** left or right. There is a resize handle on the
+  border as soon as the panel is open.
+- The width you choose **persists** across restarts, so this is a one-time
+  adjustment.
+- **Double-click the edge** to reset it back to the half-width default.
+
+Dragging it left to roughly 42 columns matches the session-list sidebar on the
+left and leaves the conversation most of the screen.
 
 ## Why a panel and not the sidebar
 
@@ -116,8 +132,20 @@ copy of every binding.
 ## Files with git changes
 
 Modified, added, deleted, and untracked files are marked `[M]`, `[A]`, `[D]`, and
-`[?]`, with the status spelled out alongside. Git status is read with
-`git status --porcelain -z` and is skipped outside a git repository.
+`[?]`, with the status spelled out alongside. The marker is backed up by the
+row's own color, which is much easier to scan in a long tree:
+
+| Status | Color | Marker |
+|--------|-------|--------|
+| Modified | yellow | `[M]` |
+| Added (staged) | green | `[A]` |
+| Deleted | red | `[D]` |
+| Renamed | magenta | `[R]` |
+| Untracked | cyan | `[?]` |
+
+The selected row keeps its cyan-on-blue cursor styling over the status color.
+Git status is read with `git status --porcelain -z` and is skipped outside a git
+repository.
 
 Directories the tree skips by default: `node_modules`, `.git`, `dist`, `build`,
 `out`, `.next`, `.turbo`, `.cache`, `__pycache__`, `.venv`, and any
@@ -177,7 +205,7 @@ than a crash.
 ## Development
 
 ```
-bun test          # 250 tests
+bun test          # 264 tests
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```

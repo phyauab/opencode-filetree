@@ -82,6 +82,10 @@ export default Plugin.define({
           group: "File tree",
           palette: true,
           suggested: true,
+          // ctrl+e, the explorer convention, so the tree is one keypress away
+          // instead of a trip through the palette. It is unbound in the host's
+          // defaults, and `filetree.toggle` stays rebindable by id.
+          bind: "ctrl+e",
           run: () => {
             if (context.ui.panel.current()?.name === PANEL) context.ui.panel.close()
             else context.ui.panel.open(PANEL)

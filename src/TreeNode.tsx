@@ -1,5 +1,5 @@
 import type { DirEntry } from "./fileSystem"
-import { getFileIcon, getGitStatusIndicator, describeGitStatus } from "./icons"
+import { getFileIcon, getGitStatusIndicator, gitStatusColor, describeGitStatus } from "./icons"
 
 type TreeNodeProps = {
   entry: DirEntry
@@ -22,11 +22,16 @@ export function TreeNode(props: TreeNodeProps) {
   // content always repaints, so the marker cannot go stale.
   const marker = props.isSelected ? "› " : "  "
 
+  // Changed rows wear the git status color; the selection's cyan wins so the
+  // cursor stays unmistakable on top of them. Clean rows pass `undefined` and
+  // keep the theme default.
+  const fg = props.isSelected ? "cyan" : gitStatusColor(props.gitStatus)
+
   // A single text node with string children. OpenTUI's TextNodeRenderable
   // accepts only strings, TextNodeRenderables, or StyledText, so a nested
   // <text> element here throws.
   return (
-    <text fg={props.isSelected ? "cyan" : undefined} bg={props.isSelected ? "blue" : undefined}>
+    <text fg={fg} bg={props.isSelected ? "blue" : undefined}>
       {`${marker}${indent}${chevron}${icon} ${props.entry.name}${git}${described}`}
     </text>
   )

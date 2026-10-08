@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { getFileIcon, getGitStatusIndicator, describeGitStatus, isHidden } from "./icons"
+import { getFileIcon, getGitStatusIndicator, describeGitStatus, gitStatusColor, isHidden } from "./icons"
 
 describe("isHidden", () => {
   it("hides node_modules", () => {
@@ -94,5 +94,43 @@ describe("describeGitStatus", () => {
 
   it("passes through unknown codes", () => {
     expect(describeGitStatus("Z")).toBe("Z")
+  })
+})
+
+describe("gitStatusColor", () => {
+  it("leaves a clean row uncolored", () => {
+    expect(gitStatusColor(undefined)).toBeUndefined()
+  })
+
+  it("colors modified files yellow", () => {
+    expect(gitStatusColor("M")).toBe("yellow")
+  })
+
+  it("colors added files green", () => {
+    expect(gitStatusColor("A")).toBe("green")
+  })
+
+  it("colors deleted files red", () => {
+    expect(gitStatusColor("D")).toBe("red")
+  })
+
+  it("colors renames magenta", () => {
+    expect(gitStatusColor("R")).toBe("magenta")
+  })
+
+  it("colors copies cyan", () => {
+    expect(gitStatusColor("C")).toBe("cyan")
+  })
+
+  it("colors unmerged red", () => {
+    expect(gitStatusColor("U")).toBe("red")
+  })
+
+  it("colors untracked files cyan", () => {
+    expect(gitStatusColor("?")).toBe("cyan")
+  })
+
+  it("leaves unknown codes uncolored", () => {
+    expect(gitStatusColor("Z")).toBeUndefined()
   })
 })

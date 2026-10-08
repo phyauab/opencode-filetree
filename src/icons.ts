@@ -66,6 +66,27 @@ export function getGitStatusIndicator(status: string | undefined): string {
   return ` [${status}]`
 }
 
+/**
+ * Row color for a git status. The bracket marker was too quiet to scan by in a
+ * long tree, so the row itself carries the change:
+ * yellow for edits, green for additions, red for removals, cyan for new files.
+ * A clean or unrecognized row keeps the theme default.
+ */
+const GIT_STATUS_COLORS: Record<string, string> = {
+  M: "yellow",
+  A: "green",
+  D: "red",
+  R: "magenta",
+  C: "cyan",
+  U: "red",
+  "?": "cyan",
+}
+
+export function gitStatusColor(status: string | undefined): string | undefined {
+  if (!status) return undefined
+  return GIT_STATUS_COLORS[status]
+}
+
 /** Longer description of a git status code, for tooltips and tests. */
 export function describeGitStatus(status: string | undefined): string {
   if (!status) return "clean"
