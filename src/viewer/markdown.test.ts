@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test"
 import { isMarkdown, buildSyntaxStyle } from "./markdown"
 import { SyntaxStyle } from "@opentui/core"
+import { syntaxStyleAllocations } from "../../scripts/test-stubs"
 
 /** The scopes the stubbed SyntaxStyle recorded, keyed for lookup. */
 const scopesOf = (style: any): Map<string, any> => {
@@ -80,5 +81,85 @@ describe("buildSyntaxStyle", () => {
     const second = buildSyntaxStyle({ ...fullTheme, syntax: { ...fullTheme.syntax, keyword: "#ff0000" } })
     expect(second).not.toBe(first)
     expect(scopesOf(second).get("keyword")).toEqual({ foreground: "#ff0000" })
+  })
+
+  // Review focus #2, for the one row that reads a second token. Every other row
+  // takes a foreground alone, so the only way to half-fill one is here.
+  it("gives inline code a background when the theme carries one", () => {
+    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: "#98c379" }, background: { base: "#1e222a" } }))
+    expect(scopes.get("markup.raw.inline")).toEqual({ foreground: "#98c379", background: "#1e222a" })
+    // The block form shares the foreground and takes no background at all.
+    expect(scopes.get("markup.raw")).toEqual({ foreground: "#98c379" })
+  })
+
+  it("drops the inline-code row whole when the theme has no background", () => {
+    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: "#98c379" } }))
+    expect(scopes.has("markup.raw.inline")).toBe(false)
+    expect(scopes.get("markup.raw")).toEqual({ foreground: "#98c379" })
+  })
+
+  it("treats an empty string as a token that is not there", () => {
+    const scopes = scopesOf(buildSyntaxStyle({ syntax: { comment: "", keyword: "#c678dd" } }))
+    expect(scopes.has("comment")).toBe(false)
+    expect(scopes.get("keyword")).toEqual({ foreground: "#c678dd" })
+  })
+})
+
+describe("buildSyntaxStyle cost", () => {
+  // Every assertion in this block is a count rather than an identity. The stub
+  // hands the same object back from `create()`, so `toBe(SyntaxStyle.create())`
+  // in the block above passes whether or not anything is reused -- which is
+  // exactly how an un-memoised empty theme, one native handle per viewer mount,
+  // got through a review that only read those.
+
+  it("costs one construction per distinct theme, the empty one included", () => {
+    // Colours no other test in this file uses, so both are cache misses however
+    // warm the module already is by the time this runs.
+    const coldA = { syntax: { comment: "#010203" } }
+    const coldB = { syntax: { comment: "#040506" } }
+    const start = syntaxStyleAllocations()
+
+    // Pairs for the two themed cases, so a repeat of the *current* theme is
+    // measurable without depending on the order the others ran in. The cache
+    // holds one entry -- one plugin, one theme at a time -- so returning to a
+    // theme after a different one has been built is a miss and a fresh build.
+    const first = buildSyntaxStyle(coldA)
+    expect(buildSyntaxStyle(coldA)).toBe(first)
+    const second = buildSyntaxStyle(coldB)
+    expect(buildSyntaxStyle(coldB)).toBe(second)
+    expect(second).not.toBe(first)
+
+    // An empty object and no theme at all are the same theme as far as the table
+    // is concerned, so neither of these is another construction.
+    const empty = buildSyntaxStyle(undefined)
+    buildSyntaxStyle(undefined)
+    buildSyntaxStyle({})
+
+    expect(syntaxStyleAllocations() - start).toBe(3)
+    expect(buildSyntaxStyle(undefined)).toBe(empty)
+  })
+
+  it("allocates once for a themed call and not again while the theme stands", () => {
+    const theme = { syntax: { string: "#070809" } }
+    const start = syntaxStyleAllocations()
+
+    const first = buildSyntaxStyle(theme)
+    buildSyntaxStyle(theme)
+    buildSyntaxStyle(theme)
+
+    expect(syntaxStyleAllocations() - start).toBe(1)
+    expect(buildSyntaxStyle(theme)).toBe(first)
+  })
+
+  it("allocates again once the theme actually changes", () => {
+    // Colours of their own, as in the first test: one the test above has already
+    // cached would cost nothing here and the count would lie.
+    const start = syntaxStyleAllocations()
+
+    const first = buildSyntaxStyle({ syntax: { string: "#131415" } })
+    const second = buildSyntaxStyle({ syntax: { string: "#161718" } })
+
+    expect(syntaxStyleAllocations() - start).toBe(2)
+    expect(second).not.toBe(first)
   })
 })

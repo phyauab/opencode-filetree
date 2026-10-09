@@ -23,6 +23,12 @@ export type MarkdownTheme = {
   text?: { base?: string }
   syntax?: Partial<Record<"comment" | "keyword" | "function" | "variable" | "string" | "number" | "type" | "operator" | "punctuation", string>>
   markdown?: Partial<Record<"heading" | "strong" | "emphasis" | "code" | "blockQuote" | "link" | "linkText" | "listItem", string>>
+  // Declared because the host's own bridge table reads it for inline code, not
+  // because it is known to exist: the theme shape recorded for this plan elides
+  // groups it does not name (`text` appears only as `feedback: {...}`), so
+  // absence was never established and guessing at it produced a wrong colour.
+  // See the `markup.raw.inline` row below.
+  background?: { base?: string }
 }
 
 /**
@@ -68,24 +74,22 @@ type TokenPath =
   | "markdown.link"
   | "markdown.linkText"
   | "markdown.listItem"
+  | "background.base"
 
 /**
  * One theme-token to syntax-scope mapping, replicating the host's own bridge.
  *
- * `requires` and `background` carry the two rows that need more than their
- * foreground, and the rule for both is that every source token has to be
- * present: a row with a missing one is skipped whole rather than half-filled.
- * A heading that gets a colour but loses its `bold` is worse than a heading in
- * the default style, because the user reads the loss as a bug in their theme
- * rather than as a missing token.
+ * `background` exists for the one row that needs a second token, and the rule is
+ * that every source token has to be present: a row with a missing one is skipped
+ * whole rather than half-filled. A heading that gets a colour but loses its
+ * `bold` is worse than a heading in the default style, because the user reads
+ * the loss as a bug in their theme rather than as a missing token.
  */
 type ScopeRow = {
   scope: readonly string[]
   /** The token the foreground comes from. */
   foreground: TokenPath
-  /** Further tokens the row needs before it may be used at all. */
-  requires?: readonly TokenPath[]
-  /** The token the background comes from. */
+  /** The token the background comes from, when the row needs one. */
   background?: TokenPath
   style: Omit<ThemeTokenStyle["style"], "foreground" | "background">
 }
@@ -99,12 +103,13 @@ type ScopeRow = {
  * are separate rows: the host underlines the first heading level and merely
  * bolds the rest, and collapsing them would take the `underline` away from `#`.
  *
- * One substitution: the host gives inline code a background from its own
- * `background.base`, and `MarkdownTheme` carries no such key -- the theme shape
- * the plugin can see has `text`, `syntax` and `markdown` only. `text.base` is
- * used in its place so inline code still gets a filled background instead of no
- * styling, which is the nearest colour the host theme actually offers and beats
- * either dropping the background or inventing one.
+ * One row asks for a token the recorded theme shape did not name: inline code
+ * takes its background from `background.base`. The row asks for it and is
+ * dropped whole when the host does not offer one, rather than falling back to a
+ * colour it does have -- an earlier draft substituted `text.base` and that is
+ * the host's *text* colour sitting behind its *code* colour, a bright inverted
+ * chip that no other markdown surface in the host wears. A missing background
+ * is a nicety; a wrong one is a bug report.
  */
 const SCOPE_TABLE: readonly ScopeRow[] = [
   { scope: ["default"], foreground: "text.base", style: {} },
@@ -128,46 +133,69 @@ const SCOPE_TABLE: readonly ScopeRow[] = [
   { scope: ["markup.list"], foreground: "markdown.listItem", style: {} },
   { scope: ["markup.quote"], foreground: "markdown.blockQuote", style: { italic: true } },
   { scope: ["markup.raw", "markup.raw.block"], foreground: "markdown.code", style: {} },
-  { scope: ["markup.raw.inline"], foreground: "markdown.code", requires: ["text.base"], background: "text.base", style: {} },
+  { scope: ["markup.raw.inline"], foreground: "markdown.code", background: "background.base", style: {} },
   { scope: ["markup.link", "markup.link.url", "string.special", "string.special.url"], foreground: "markdown.link", style: { underline: true } },
   { scope: ["markup.link.label"], foreground: "markdown.linkText", style: { underline: true } },
   { scope: ["label"], foreground: "markdown.linkText", style: {} },
   { scope: ["spell", "nospell"], foreground: "text.base", style: {} },
 ]
 
-/** Every token the table reads, in table order, so the key is position-stable. */
-const TABLE_TOKENS: readonly TokenPath[] = SCOPE_TABLE.flatMap((row) =>
-  row.requires === undefined ? [row.foreground] : [row.foreground, ...row.requires])
+/**
+ * Every token the table reads, deduplicated, in table order.
+ *
+ * The order is what makes the memo key position-stable, and the dedupe is what
+ * keeps `syntax.keyword` -- which four rows read -- from counting four times
+ * toward a key that only ever compared for equality. Built from the table
+ * rather than listed by hand so a new row cannot be forgotten here.
+ */
+const TABLE_TOKENS: readonly TokenPath[] = [
+  ...new Set(
+    SCOPE_TABLE.flatMap((row) => (row.background === undefined ? [row.foreground] : [row.foreground, row.background])),
+  ),
+]
 
-/** Reads one token out of the theme, treating a non-string as absent. */
+/** Reads one token out of the theme, treating anything but a real colour as absent. */
 function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): string | undefined {
   const dot = path.indexOf(".")
-  const group = path.slice(0, dot)
-  const key = path.slice(dot + 1)
-  const table = group === "text" ? theme?.text : group === "syntax" ? theme?.syntax : theme?.markdown
-  // One cast, at the only place the halves of a `TokenPath` meet again. The path
-  // is a compile-time union, so the pair is known valid by the time it gets
-  // here; what the checker will not accept is a plain `string` indexing three
-  // different key unions at once, and narrowing each half separately would need
-  // the same cast three times over.
-  const value = (table as Record<string, string | undefined> | undefined)?.[key]
-  // A theme is data the host assembled from a user's config, so the guard is
-  // not paranoia: an empty string, a number, or null has all been a plausible
-  // thing to find there, and `SyntaxStyle.fromTheme` would take any of them.
-  return typeof value === "string" ? value : undefined
+  // One cast, at the only place the halves of a `TokenPath` meet again. Every
+  // group in `MarkdownTheme` is a bag of optional colour strings, so this reads
+  // whichever one the path names; what the checker will not accept is a plain
+  // `string` indexing four different key unions at once, and narrowing each half
+  // separately would need the same cast four times over.
+  const groups = theme as Record<string, Record<string, string | undefined> | undefined> | undefined
+  const value = groups?.[path.slice(0, dot)]?.[path.slice(dot + 1)]
+  // A theme is data the host assembled from a user's config, so this guard is
+  // not paranoia: a number, null, and a stray object have all been plausible
+  // things to find in there. An empty string is rejected alongside them --
+  // `fromTheme` skips a falsy foreground but would pass "" through as a
+  // background unchanged, and a colour that names nothing is as useless as one
+  // that is missing.
+  return typeof value === "string" && value !== "" ? value : undefined
 }
 
 /**
  * The style this module last built, keyed by the tokens it was built from.
  *
  * `SyntaxStyle` holds a native handle and has a `destroy()` this never calls, so
- * a theme change leaks one style. That is bounded by the number of theme
- * changes in a session -- a handful at most, and the host itself makes the same
- * trade when it rebuilds its own styles on a switch -- while dropping the cache
- * would cost one construction per file opened, each of which registers every
- * scope into a fresh native style.
+ * every style built here is one the process keeps until it exits: one per
+ * distinct theme, plus one per malformed theme that reaches the catch below. The
+ * cache is what holds that line. Without it the cost is per *viewer mount*
+ * rather than per *theme change* -- `FileViewer` asks for a style each time it
+ * opens a `.md` file -- so an hour of reading files in one theme would leak an
+ * hour's worth of native styles, and the worst case is the empty theme, which is
+ * the one every file opened before the host resolved a theme would hit.
  */
 let cached: { key: string; style: SyntaxStyle } | null = null
+
+/**
+ * The style handed back when the theme cannot be read at all.
+ *
+ * Apart from `cached` because a throw can happen anywhere in the body, including
+ * before the key is known, so there is no key to hang it on. It is held rather
+ * than rebuilt for the same reason: the catch sits on the path of every mount
+ * while a bad theme stands.
+ */
+let fallback: SyntaxStyle | null = null
 
 /**
  * A `SyntaxStyle` built from the host theme, or `SyntaxStyle.create()` when the
@@ -188,10 +216,9 @@ export function buildSyntaxStyle(theme: MarkdownTheme | undefined): SyntaxStyle 
     // token, so two different themes cannot collide: a theme that lost a token
     // gets a shorter key rather than the key of a theme that never had it.
     const key = TABLE_TOKENS.map((path) => tokenValue(theme, path) ?? "").join("\u0000")
-    // No token the table reads: hand back the host's own empty style rather
-    // than asking `fromTheme` for a style with no scopes in it. `create()` is
-    // what the host itself falls back to and costs nothing.
-    if (!TABLE_TOKENS.some((path) => tokenValue(theme, path) !== undefined)) return SyntaxStyle.create()
+    // The cache check comes before anything that allocates, and in particular
+    // before the `create()` at the bottom of this block: a repeat has to cost
+    // nothing, and an untokenised theme is the one that repeats most.
     if (cached !== null && cached.key === key) return cached.style
 
     const scopes: ThemeTokenStyle[] = []
@@ -206,10 +233,21 @@ export function buildSyntaxStyle(theme: MarkdownTheme | undefined): SyntaxStyle 
       scopes.push({ scope: [...row.scope], style })
     }
 
-    const style = SyntaxStyle.fromTheme(scopes)
+    // An empty list is "the theme carried nothing this table reads": every token
+    // absent, a theme with only a background and no foreground, or colours that
+    // were all empty strings. Hand back the host's own empty style rather than
+    // asking `fromTheme` for a style with no scopes in it -- and cache it, for
+    // the same reason as any other result, since this is the path every file
+    // opened before the host resolved a theme takes.
+    const style = scopes.length === 0 ? SyntaxStyle.create() : SyntaxStyle.fromTheme(scopes)
     cached = { key, style }
     return style
   } catch {
-    return SyntaxStyle.create()
+    // A theme that cannot be read is still not a reason to show raw source. Held
+    // rather than rebuilt, and kept out of `cached` because a throw can land
+    // before the key is known; delegating to the empty-theme branch instead
+    // would recurse for ever if `create()` itself were what threw.
+    fallback ??= SyntaxStyle.create()
+    return fallback
   }
 }

@@ -161,6 +161,29 @@ mock.module("@opentui/solid/jsx-dev-runtime", () => ({
 }))
 
 /**
+ * How many syntax styles the stub has been asked to build.
+ *
+ * Counted across both entry points because the real `fromTheme()` begins with a
+ * `create()` of its own -- read `SyntaxStyle.fromTheme` in `@opentui/core` -- so
+ * one themed build and one empty build cost the same thing at runtime: a native
+ * handle that nothing ever calls `destroy()` on.
+ *
+ * This counter is load-bearing, not belt-and-braces. The tests below it assert
+ * the empty-theme fallback by identity against `SyntaxStyle.create()`, and the
+ * stub hands the same object back on every call, so those assertions pass
+ * whether or not `buildSyntaxStyle` memoises anything. That is how a `create()`
+ * sitting *before* the cache check -- one native handle leaked per viewer mount
+ * -- survived a full review of the identity assertions and was only caught by
+ * counting. Keep a counter test whenever a stub is shared-object by design.
+ */
+let syntaxStyleAllocationCount = 0
+
+/** The number of syntax styles the stub has built, for tests that care about cost. */
+export function syntaxStyleAllocations(): number {
+  return syntaxStyleAllocationCount
+}
+
+/**
  * The host's `SyntaxStyle.create()` allocates a native handle on every call, and
  * `fromTheme` builds on top of it, so neither is a singleton. This stub hands
  * back one shared object instead, and that is the single deliberate difference
@@ -168,9 +191,8 @@ mock.module("@opentui/solid/jsx-dev-runtime", () => ({
  * `toBe(SyntaxStyle.create())` compares what `buildSyntaxStyle` returned against
  * a second, separate call -- and a factory that built a new object each time
  * would fail them for a reason that has nothing to do with the theme mapping.
- * Value equality is what those assertions mean, and a shared object is the
- * cheapest way to let identity stand in for it. Every other member returns a
- * fresh object, as the real ones do.
+ * Value equality is what those assertions mean; `syntaxStyleAllocations()` is
+ * what catches a memoisation regression, because identity cannot.
  */
 const emptySyntaxStyle = { __stub: "SyntaxStyle.create", scopes: [] as unknown[] }
 
@@ -179,22 +201,29 @@ const emptySyntaxStyle = { __stub: "SyntaxStyle.create", scopes: [] as unknown[]
  *
  * The real package loads a native render library over FFI, which a unit test has
  * no business doing, and the plugin is never supposed to ship its own copy. This
- * stands in for exactly the three members the viewer calls.
+ * stands in for the two members the viewer calls.
  *
  * `fromTheme` records the scope list it was handed rather than interpreting it,
  * which is what lets a test assert the theme→scope mapping without a renderer.
  *
- * Nothing else in the suite imports this module yet, so a member the markdown
- * viewer does not reach was left out rather than guessed at: `SyntaxStyle` has a
- * dozen more methods and the renderables are a whole tree, none of which a unit
- * test here can exercise without a real renderer.
+ * `getTreeSitterClient` is deliberately absent although the plan named it for the
+ * stub: nothing in `src/` imports it, and `CodeRenderable` defaults to the
+ * process-global singleton on its own, so the plan's own decision to omit
+ * `treeSitterClient` from the `<markdown>` props means no task will call it.
+ * Nothing else in the suite imports this module either, so a member nothing
+ * reaches was left out rather than guessed at.
  */
 mock.module("@opentui/core", () => ({
   SyntaxStyle: {
-    fromTheme: (scopes: unknown[]) => ({ __stub: "SyntaxStyle.fromTheme", scopes }),
-    create: () => emptySyntaxStyle,
+    fromTheme: (scopes: unknown[]) => {
+      syntaxStyleAllocationCount++
+      return { __stub: "SyntaxStyle.fromTheme", scopes }
+    },
+    create: () => {
+      syntaxStyleAllocationCount++
+      return emptySyntaxStyle
+    },
   },
-  getTreeSitterClient: () => ({ __stub: "TreeSitterClient" }),
 }))
 
 /** Runs and clears the callbacks `onCleanup` collected during a test. */
