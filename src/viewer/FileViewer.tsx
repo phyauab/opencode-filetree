@@ -93,27 +93,26 @@ function messageFor(file: Exclude<ViewFile, { kind: "text" }>): string {
 /**
  * The props for one coloured run of text inside a row.
  *
- * `@opentui/solid` publishes `<span>` as `ComponentProps<{}, TextNodeRenderable>`
- * -- an empty object -- so the checker rejects `fg` even though `TextNodeOptions`,
- * which is what `SpanRenderable` is constructed with and what the renderable
- * honours, carries `fg?: string | RGBA`. This is the whole of the workaround,
- * and it lives in one place so the two `<span>`s below cannot drift into
- * disagreeing about it. A plain spread rather than a cast on the element,
- * because a cast on the element would have to be written twice and would hide
- * the shape from every reader of the row.
+ * The colour goes in `style`, not in a bare `fg`, and that is load-bearing
+ * rather than a spelling preference. `setProperty` in `@opentui/solid`'s
+ * reconciler branches on whether the node is a `TextNodeRenderable` -- which
+ * `<span>` is, via `SpanRenderable` -- and that branch handles only `href` and
+ * `style` before returning early. A bare `fg` on a `<span>` is silently
+ * dropped: it never reaches the renderable at all. `<text>` takes `fg` fine
+ * because `TextRenderable` is not a `TextNodeRenderable`, so it falls through
+ * to the default assignment that triggers the `fg` setter. The two elements
+ * look interchangeable and are not.
  *
- * An uncoloured span gets NO `fg` key rather than an explicit `fg: undefined`,
- * and that is the common case rather than an edge: `highlight.ts` maps
- * `operator` and `punctuation` to the theme default on purpose and leaves every
- * unmapped token undefined, so most spans in ordinary code arrive here with no
- * colour. The props reach the renderable through `_$spread`/`_$setProp` after
- * `_$createElement("span")` has already built it with no options at all, and
- * nobody has watched that ordering happen in a real TUI. Omitting the key leaves
- * the renderable exactly as the constructor left it; setting it to undefined
- * asks a code path whose behaviour is unobserved to actively unset something.
+ * An uncoloured span gets no `style` key at all. `setProperty`'s `style` branch
+ * does `A.fg = l.fg ? parse(l.fg) : A.fg`, so an explicit `fg: undefined`
+ * inside `style` would be harmless -- it leaves the renderable alone -- but
+ * omitting the key is simpler and matches what the constructor produced.
+ * `highlight.ts` maps `operator` and `punctuation` to the theme default on
+ * purpose and leaves every unmapped token undefined, so most spans in ordinary
+ * code arrive here with no colour at all.
  */
-function spanProps(fg: string | undefined): Record<string, string | undefined> {
-  return fg === undefined ? {} : { fg }
+function spanProps(fg: string | undefined): { style?: { fg: string } } {
+  return fg === undefined ? {} : { style: { fg } }
 }
 
 export const FileViewer: Component<FileViewerProps> = (props) => {
