@@ -330,7 +330,10 @@ describe("a panel with no rows yet", () => {
 })
 
 describe("VIEWER_ROWS_CHROME", () => {
-  it("reserves two rows of the panel for the header and the gutter allowance", () => {
+  it("reserves two rows for the header plus slack, none of them for a gutter", () => {
+    // One row is the header. The other is slack. The gutter is a prefix on each
+    // content row, so it spends no row of its own, and a caller that believed
+    // otherwise would subtract a line of file to keep nothing.
     expect(VIEWER_ROWS_CHROME).toBe(2)
   })
 })
