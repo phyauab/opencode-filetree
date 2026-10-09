@@ -18,7 +18,9 @@
 - **The host does NOT hand a plugin a `SyntaxStyle` or a `TreeSitterClient`.** `Context` has neither, and neither does `CliRenderer`. The plugin must build its own. The one host route to live instances (`ctx.markdown.registerCodeBlockRenderer`) only covers code blocks inside a host-owned markdown renderable and is not usable here.
 - **`treeSitterClient` is deliberately omitted from the `<markdown>` props.** `MarkdownOptions.treeSitterClient` is optional, and `CodeRenderable`'s constructor already defaults it to `getTreeSitterClient()` — a process-global singleton. Passing it explicitly buys nothing.
 - **`ctx.theme` is typed as an unresolved import.** `@opencode/theme` is an optional peer of `@opencode/plugin` and is not installed, so `Context["theme"]` resolves to an unresolved module under `skipLibCheck`. Declare a local structural type for the tokens this feature reads rather than importing the host's type.
+- **Markdown never falls back to the Prism path on a missing colour source.** `buildSyntaxStyle` returns `SyntaxStyle.create()` — the host's own sanctioned fallback — when the theme carries nothing usable, and that is a *truthy* style. An empty theme therefore still renders markdown, just uncoloured. Falling back to raw markdown source because the theme was thin would reproduce exactly the complaint this feature exists to fix. The only Prism fallback that exists is for non-`.md` files.
 - **Tests run against stubs** (`bunfig.toml` preloads `scripts/test-stubs.ts`). `@opentui/core` is NOT currently stubbed and must be added — loading the real one in a Bun test would pull in native FFI. The stub only has to satisfy `SyntaxStyle.fromTheme`, `SyntaxStyle.create` and `getTreeSitterClient`.
+- **In tests, JSX props are eager values, not getters.** Bun compiles `src/*.tsx` with its own transform against the stubbed `@opentui/solid/jsx-dev-runtime`, not with babel-preset-solid, so `content={lines.join("\n")}` arrives as the string itself. (The plugin's real build uses babel and does wrap calls in getters; the resize test in `FileViewer.test.ts` mimics that by handing `get height()` explicitly.) Assert on `props.content` directly and do not call it.
 - **Every state change must request a repaint** via `context.renderer.requestRender()`. The renderer is demand-driven; this is the bug class that cost four earlier fix attempts. The markdown scroll adapter must ask for a frame itself.
 - **Never gate keys on renderer focus.** Use plugin-owned state. The existing `viewerOpen` flag is the precedent.
 - **Copy conventions:** existing code comments explain *why*, are written in full sentences, and record what was tried and why it failed. Match that density.
@@ -31,9 +33,9 @@ Verified by reading `@opentui/core` and the opencode binary. Do not re-derive th
 
 ```ts
 {
-  text:   { base: string; feedback: {...} }
-  syntax: { comment, keyword, function, variable, string, number, type, operator, punctuation }  // all string
-  markdown: { text, heading, link, linkText, code, blockQuote, emphasis, strong, horizontalRule } // all string
+  text:    { base: string; feedback: {...} }
+  syntax:  { comment, keyword, function, variable, string, number, type, operator, punctuation }  // all string
+  markdown:{ text, heading, link, linkText, code, blockQuote, emphasis, strong, horizontalRule }   // all string
 }
 ```
 
@@ -75,16 +77,16 @@ Verified by reading `@opentui/core` and the opencode binary. Do not re-derive th
 ["spell","nospell"]                                → text.base
 ```
 
-**`ScrollBoxRenderable`** exposes `scrollTop` (get/set), `scrollTo(position)` and `scrollBy(delta, unit)` where unit is `"absolute" | "viewport" | "content" | "step"`. Drive it with `scrollTo(row)`; clamp against its own `maxScrollTop` if `scrollTo` does not clamp itself.
+**`ScrollBoxRenderable`** exposes `scrollTop` (get/set), `scrollTo(position)` and `scrollBy(delta, unit)` where unit is `"absolute" | "viewport" | "content" | "step"`. Drive it with `scrollTo(row)`; clamp against its own `maxScrollTop` rather than trusting `scrollTo` to.
 
 **`MarkdownRenderable`** constructor is `(ctx, options)`, which is how every intrinsic element is built, so `<markdown>` through the reconciler follows the same path as `<box>` and `<text>`. It has reactive setters for `content`, `syntaxStyle`, `conceal` and friends. `conceal` defaults to `true`, which is what hides the `#`/`*`/backtick markers — the whole point of a preview.
 
 ## Review Focus
 
 1. **A `.md` file must reach the markdown path and a non-`.md` file must not.** Pinned by an assertion on the rendered element types, not on the file's content.
-2. **A missing or partial `ctx.theme` must not throw.** Every token is optional in practice; a theme that omits `markdown.code` still has to render.
+2. **A missing or partial `ctx.theme` must not throw, and must still render markdown.** Every token is optional in practice; a theme that omits `markdown.code` still has to render — uncoloured if need be, never raw.
 3. **The existing Prism path must be untouched.** Its 24 `FileViewer` tests must pass unchanged.
-4. **The scroll adapter must not dead-key.** Pressing `down` at the bottom of a long markdown file must not throw or jump.
+4. **The scroll adapter must not dead-key or double-clamp.** Pressing `down` repeatedly on a long markdown file must keep climbing; on a short one it must stop at the scrollbox's own maximum, not at the file's line count.
 
 ---
 
@@ -185,6 +187,13 @@ describe("buildSyntaxStyle", () => {
     expect(buildSyntaxStyle(undefined)).toBe(SyntaxStyle.create())
   })
 
+  it("returns the empty style when the theme carries no tokens this table reads", () => {
+    // An empty theme is not a reason to show raw markdown source: the host's own
+    // fallback is the empty style, and markdown still renders its structure.
+    expect(buildSyntaxStyle({})).toBe(SyntaxStyle.create())
+    expect(buildSyntaxStyle({ text: {} })).toBe(SyntaxStyle.create())
+  })
+
   it("skips tokens the theme does not carry instead of guessing colours", () => {
     const scopes = scopesOf(buildSyntaxStyle({ syntax: { comment: "#111111" } }))
     expect(scopes.get("comment")).toEqual({ foreground: "#111111", italic: true })
@@ -244,7 +253,7 @@ Expected: FAIL — `Cannot find module './markdown'`.
 
 `buildSyntaxStyle`:
 
-1. If `theme` is undefined, or carries none of the tokens the table reads, return `SyntaxStyle.create()` — the host's own fallback, and the only answer that is valid with no theme.
+1. Collect the tokens the table reads. If none of them is present — including when `theme` is undefined — return `SyntaxStyle.create()`. Do not build a scope list for an empty theme; an empty `fromTheme([])` and `create()` both work, but `create()` is the host's own answer and costs nothing.
 2. Otherwise walk the token table from **Host facts** above, pushing one `{ scope, style }` per row **whose every source token is present**. A row with a missing token is skipped whole rather than half-filled — a heading that gets a colour but loses its `bold` is worse than a heading in the default style.
 3. Memoise: keep a module-level `{ key, style }` cache. `key` is a joined string of the token values in a fixed order (so a changed token changes the key). Return the cached style when the key matches.
 4. Wrap the whole body in try/catch and fall back to `SyntaxStyle.create()`. A malformed theme must not take the panel down.
@@ -277,18 +286,39 @@ git commit -m "feat(viewer): build a SyntaxStyle from the host theme for markdow
 - Test: `src/viewer/FileViewer.test.ts`
 
 **Interfaces:**
-- Consumes: `isMarkdown`, `buildSyntaxStyle` from `./markdown` (Task 1); `readForView` → `ViewFile`; `highlightLines`/`languageFor`; `maxScroll` from `./scroll`.
+- Consumes: `isMarkdown`, `buildSyntaxStyle`, `type MarkdownTheme` from `./markdown` (Task 1); `readForView` → `ViewFile`; `highlightLines`/`languageFor`; `maxScroll` from `./scroll`.
+
+The existing `mount` helper is `mount(path, height, renderer = createMockRenderer(), extra = {})` and spreads `extra` onto the component's props. `theme` is NOT a prop — the viewer reads `context.theme` — so the helper has to move it.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `src/viewer/FileViewer.test.ts`, reusing the existing `mount`/`elements`/`rowsOf` helpers. The `mount` helper needs a `theme` argument threaded through to the context — extend it the same way `scrollTo` is threaded, defaulting to `undefined` so every existing call is unchanged:
+First extend `mount` in `src/viewer/FileViewer.test.ts`:
 
 ```ts
+function mount(path: string, height: number, renderer: any = createMockRenderer(), extra: any = {}) {
+  // `theme` belongs on the context, not on the component's props, because the
+  // viewer reads `context.theme`. It is pulled out of `extra` so every existing
+  // call -- which passes no theme -- is unchanged and simply gets `undefined`.
+  const { theme, ...props } = extra
+  return (FileViewer as any)({
+    path,
+    height,
+    context: { ...makeContext(renderer, path), theme },
+    ...props,
+  })
+}
+```
+
+Then add the new tests:
+
+```ts
+/** A theme carrying only the markdown heading token, which is enough to mark a
+ *  file as markdown and no more. */
+const mdTheme = { markdown: { heading: "#e06c75" } }
+
 it("renders markdown files through a scrollbox and a markdown element", () => {
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
-  const element = mount(path, 5, createMockRenderer(), undefined, {
-    theme: { markdown: { heading: "#e06c75" } },
-  })
+  const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
   const children = elements(element?.props?.children)
   expect(children.some((child: any) => child.type === "markdown")).toBe(true)
   expect(children.some((child: any) => child.type === "scrollbox")).toBe(true)
@@ -296,9 +326,7 @@ it("renders markdown files through a scrollbox and a markdown element", () => {
 
 it("passes the whole file to the markdown element and conceals the markers", () => {
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
-  const element = mount(path, 5, createMockRenderer(), undefined, {
-    theme: { markdown: { heading: "#e06c75" } },
-  })
+  const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
   const md = elements(element?.props?.children).find((child: any) => child.type === "markdown")
   expect(md?.props.content).toBe("# Title\n\nsome text")
   expect(md?.props.conceal).toBe(true)
@@ -306,9 +334,7 @@ it("passes the whole file to the markdown element and conceals the markers", () 
 
 it("leaves code files on the Prism path", () => {
   const path = makeFile("a.ts", "const a = 1\n")
-  const element = mount(path, 5, createMockRenderer(), undefined, {
-    theme: { markdown: { heading: "#e06c75" } },
-  })
+  const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
   const children = elements(element?.props?.children)
   expect(children.some((child: any) => child.type === "markdown")).toBe(false)
   expect(children.some((child: any) => child.type === "scrollbox")).toBe(false)
@@ -317,27 +343,31 @@ it("leaves code files on the Prism path", () => {
 
 it("shows the file name alone in the markdown header, with no line range", () => {
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
-  const element = mount(path, 5, createMockRenderer(), undefined, {
-    theme: { markdown: { heading: "#e06c75" } },
-  })
+  const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
   expect(headerOf(element)).toBe("readme.md")
 })
 
-it("falls back to the Prism path when the theme carries no markdown tokens", () => {
-  // Review Focus #2: a theme that says nothing usable must not throw, and the
-  // reader still gets to read the file.
+it("still renders markdown when the theme carries nothing usable", () => {
+  // Review Focus #2: a thin theme buys an uncoloured preview, never a return to
+  // raw markdown source -- which is the complaint this feature exists to fix.
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
-  const element = mount(path, 5, createMockRenderer(), undefined, { theme: {} })
+  const element = mount(path, 5, createMockRenderer(), { theme: {} })
   const children = elements(element?.props?.children)
-  expect(children.some((child: any) => child.type === "markdown")).toBe(false)
-  expect(rowsOf(element)).toEqual(["1 │ # Title", "2 │ ", "3 │ some text"])
+  expect(children.some((child: any) => child.type === "markdown")).toBe(true)
+  expect(rowsOf(element)).toEqual([])
+})
+
+it("still renders markdown when there is no theme at all", () => {
+  const path = makeFile("readme.md", "# Title\n\nsome text\n")
+  const element = mount(path, 5, createMockRenderer(), {})
+  expect(elements(element?.props?.children).some((child: any) => child.type === "markdown")).toBe(true)
 })
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bun test src/viewer/FileViewer.test.ts`
-Expected: FAIL on the five new tests.
+Expected: FAIL on the six new tests. The existing 24 must still pass — the `mount` change is the only thing that could break them, and it is a no-op when `extra` carries no `theme`.
 
 - [ ] **Step 3: Implement the markdown path**
 
@@ -345,21 +375,39 @@ In the component body, after `const file = readForView(props.path)`:
 
 ```ts
 const lines = file.kind === "text" ? file.lines : []
+/*
+ * Markdown is a different renderer, not a different colouring of the same one:
+ * `MarkdownRenderable` parses and lays out its own blocks, so it never sees the
+ * line-by-line span pipeline and does not need it. `buildSyntaxStyle` cannot
+ * return undefined -- it falls back to the empty style, which is what the host
+ * itself uses -- so there is no colour-driven fork back to the Prism path. A
+ * thin theme buys an uncoloured preview, never raw source.
+ */
 const markdown = isMarkdown(props.path) && file.kind === "text"
 const syntaxStyle = markdown ? buildSyntaxStyle(themeOf(props.context)) : undefined
-const asMarkdown = markdown && syntaxStyle !== undefined
-const spans = asMarkdown ? [] : tokenize(lines, props.path)
+const spans = markdown ? [] : tokenize(lines, props.path)
 ```
 
-`themeOf(context)` is a small local helper that returns `context.theme` typed as `MarkdownTheme | undefined`. It exists because `Context["theme"]` is an unresolved import — one cast in one place, with a comment saying so.
+`themeOf(context)` is a small local helper:
+
+```ts
+/**
+ * `Context["theme"]` is typed as an unresolved import -- `@opencode/theme` is an
+ * optional peer of `@opencode/plugin` and is not installed -- so the one cast
+ * that bridges it lives here rather than at the use site.
+ */
+function themeOf(context: Context): MarkdownTheme | undefined {
+  return (context as { theme?: MarkdownTheme }).theme
+}
+```
 
 Then, in the returned JSX, *before* the existing text branch:
 
 ```tsx
-if (asMarkdown) {
+if (markdown) {
   return (
     <box flexDirection="column">
-      <text fg="dim" wrapMode="none" truncate>{basename(props.path)}</text>
+      <text fg="dim" wrapMode="none" truncate>{markdownHeader()}</text>
       <scrollbox flexGrow={1} ref={captureMarkdownBox}>
         <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle} conceal />
       </scrollbox>
@@ -368,10 +416,11 @@ if (asMarkdown) {
 }
 ```
 
+`markdownHeader()` is the existing header logic minus the line range: the name, plus `— first N lines` when `file.truncated`. The rendered height of markdown is not the file's line count — a paragraph wraps, a list gains markers, blocks are separated by blank rows — so `start+1-last of total` would be a number the reader cannot map to anything on screen. Say that in the comment where the range is dropped.
+
 Rules for this step:
 
 - **`captureMarkdownBox` must be one closure per mount.** Declare `let markdownBox: unknown` in the body and `const captureMarkdownBox = (el: unknown) => { markdownBox = el }` next to it. The body runs once per mount, so the closure is created once — this is the same lesson as `FileTree`'s `captureRoot`, which re-subscribed per render until the ref was made stable. Say so in the comment.
-- **The header for markdown carries the name and the truncation notice, never a line range.** The rendered height of markdown is not the file's line count — a paragraph wraps, a list gains markers, blocks are separated by blank rows — so `start+1-last of total` would be a number the reader cannot map to anything on screen. When `file.truncated`, append `— first N lines` exactly as the text path does.
 - **`conceal` is explicit**, matching its default of `true`, so a reader is not left to work out whether the markers are hidden.
 - **`treeSitterClient` is not passed.** `CodeRenderable` defaults it to the process-global singleton; passing it buys nothing.
 - **Do not touch the text path's JSX.** Its 24 existing tests must pass unchanged (Review Focus #3).
@@ -379,7 +428,7 @@ Rules for this step:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bun test src/viewer/FileViewer.test.ts`
-Expected: PASS — the original 24 plus the 5 new.
+Expected: PASS — the original 24 plus the 6 new.
 
 - [ ] **Step 5: Run the whole suite, typecheck and build**
 
@@ -405,63 +454,94 @@ git commit -m "feat(viewer): render markdown files through MarkdownRenderable"
 
 **Interfaces:**
 - Consumes: the `scrollTo?: (setOffset: Setter<number>) => void` prop, unchanged.
+- Consumes: `isMarkdown` from `./viewer/markdown` in `tui.tsx`.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `src/viewer/FileViewer.test.ts`:
+In `src/viewer/FileViewer.test.ts`. Note the `mount` signature from Task 2: `(path, height, renderer, extra)`.
 
 ```ts
 it("hands the markdown path a writer that drives the scrollbox", () => {
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
+  const renderer = createMockRenderer()
   let writer: any
-  const element = mount(path, 5, createMockRenderer(), {
+  const element = mount(path, 5, renderer, {
+    theme: { markdown: { heading: "#e06c75" } },
     scrollTo: (fn: any) => (writer = fn),
-  }, { theme: { markdown: { heading: "#e06c75" } } })
+  })
 
   // A stand-in for the ScrollBoxRenderable, handed over the way the reconciler
-  // hands a ref.
+  // hands a ref. `scrollTop` is the source of truth the adapter reads.
   const scrolled: number[] = []
   const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
-  const fake = { scrollTop: 7, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) }
-  box.props.ref(fake)
+  box.props.ref({ scrollTop: 7, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
+  const framesBefore = renderer.frames()
 
   // The plugin always calls with an updater over the previous position, which is
   // what scrollByLine produces.
   writer((prev: number) => prev + 1)
+
   expect(scrolled).toEqual([8])
+  expect(renderer.frames()).toBeGreaterThan(framesBefore)
 })
 
 it("clamps the markdown scroll against the scrollbox's own maximum", () => {
+  // The sentinel line count handed to the keymap cannot clamp, so this side has
+  // to -- otherwise the bottom of a long file is unreachable.
   const path = makeFile("readme.md", "# Title\n\nsome text\n")
   let writer: any
   const element = mount(path, 5, createMockRenderer(), {
+    theme: { markdown: { heading: "#e06c75" } },
     scrollTo: (fn: any) => (writer = fn),
-  }, { theme: { markdown: { heading: "#e06c75" } } })
+  })
   const scrolled: number[] = []
   const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
   box.props.ref({ scrollTop: 100, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
 
   writer((prev: number) => prev + 1)
+
   expect(scrolled).toEqual([100])
 })
 
 it("still hands the text path its own offset signal", () => {
+  // The markdown branch must not steal the Prism path's writer. The offset is not
+  // readable back out of the stub's static description, so this asserts the
+  // writer really is the component's signal by watching it ask for a frame --
+  // which is the only observable effect the component's own scroll has.
   const path = makeFile("a.ts", "const a = 1\nconst b = 2\n")
+  const renderer = createMockRenderer()
   let writer: any
-  const element = mount(path, 5, createMockRenderer(), { scrollTo: (fn: any) => (writer = fn) })
+  mount(path, 5, renderer, { scrollTo: (fn: any) => (writer = fn) })
+  const before = renderer.frames()
+
   writer((prev: number) => prev + 1)
-  expect(rowsOf(element)).toEqual(["2 │ const b = 2"])
+
+  expect(renderer.frames()).toBeGreaterThan(before)
 })
 ```
 
-In `src/tui.test.ts`:
+In `src/tui.test.ts`. The mock's `viewerOffsets()` shadows `scrollTo` and records every offset the plugin *asks for* — which is exactly what the sentinel test needs, because `scrollByLine`'s clamp is applied before the adapter ever sees it. If the sentinel is missing, the recorded offsets clamp at `maxScroll(mdLineCount, rows)` and stop climbing.
 
 ```ts
-//  - opening a markdown file hands the keymap a line count that cannot clamp early
-//  - opening a code file keeps the reader's own line count
+itRender("keeps scrolling a markdown file past its line count", async () => {
+  // Markdown renders as blocks, so its rendered height is not its line count.
+  // Handing the keymap the file's line count would clamp `down` at maxScroll(3, rows)
+  // on a three-line markdown file that renders thirty rows, and the reader could
+  // never reach the bottom. The sentinel defers the clamp to the scrollbox.
+  const m = createMockContext()
+  const state = m.panelState()
+  // Select a .md entry and open it.
+  ...
+  const { written } = m.viewerOffsets()
+  const down = m.command("filetree.viewer.down")
+  for (let i = 0; i < 10; i++) down?.run?.()
+  expect(written[written.length - 1]).toBe(10)
+})
 ```
 
-Assert on whatever the mock records of `viewerLines`; if the mock cannot see it, assert instead that `openViewer` on a `.md` file and on a `.ts` file both open the panel, and say in the report that the sentinel is not covered by a test.
+Fill in the selection and command-invocation details from the surrounding tests in that file — copy how `itRender("enter on a file opens the viewer panel and nothing else")` selects an entry and runs a command. Also add a `theme` to `createMockContext`'s context object (a minimal `{ markdown: { heading: "#e06c75" } }` is enough) so the markdown path is taken for a reason the test states rather than by falling through the no-theme branch; check first that nothing else in the suite reads `theme`.
+
+If after reading the file the selection cannot be made to land on a `.md` entry, say so in the report rather than inventing a weaker test that would pass either way.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -473,7 +553,7 @@ Expected: FAIL on the new assertions.
 Replace the single `props.scrollTo?.(setScroll)` with a branch:
 
 ```ts
-if (asMarkdown) {
+if (markdown) {
   props.scrollTo?.(markdownScroll)
 } else {
   props.scrollTo?.(setScroll)
@@ -484,14 +564,16 @@ if (asMarkdown) {
 
 ```ts
 const markdownScroll: Setter<number> = (value) => {
-  const box = markdownBox as { scrollTop: number; maxScrollTop: number; scrollTo(n: number): void } | undefined
+  const box = markdownBox as
+    | { scrollTop: number; maxScrollTop: number; scrollTo(n: number): void }
+    | undefined
   if (!box) return 0
   const updater = typeof value === "function" ? value : () => value
   const next = updater(box.scrollTop)
   // Clamp against the box's own maximum rather than trusting scrollTo to: the
-  // viewer was handed a line count that deliberately cannot clamp (see
-  // openViewer), so something has to, and this is the only side that knows the
-  // rendered height.
+  // keymap was handed a line count that deliberately cannot clamp (see
+  // openViewer in tui.tsx), so something has to, and this is the only side that
+  // knows the rendered height.
   box.scrollTo(Math.max(0, Math.min(next, box.maxScrollTop)))
   context.renderer.requestRender()
   return next
@@ -503,10 +585,10 @@ const markdownScroll: Setter<number> = (value) => {
 In `src/tui.tsx`, where `setViewerLines(...)` is called:
 
 ```ts
-// Markdown renders as blocks, so its rendered height is not its line count and
-// is not known until the renderable has laid out. A sentinel keeps
-// scrollByLine's clamp from binding early and cutting the bottom off; the
-// viewer's adapter clamps against the scrollbox's own maxScrollTop instead.
+// Markdown renders as blocks, so its rendered height is not its line count and is
+// not known until the renderable has laid out. A sentinel keeps scrollByLine's
+// clamp from binding early and cutting the bottom off; the viewer's adapter
+// clamps against the scrollbox's own maxScrollTop instead.
 const rendered = file.kind === "text" ? file.totalLines : 0
 setViewerLines(isMarkdown(entry.path) && file.kind === "text" ? Number.MAX_SAFE_INTEGER : rendered)
 ```
