@@ -505,6 +505,43 @@ describe("a markdown file", () => {
  * a `.md` file and every press moves a number nothing reads.
  */
 describe("the writer handed to the keymap", () => {
+  /*
+   * A stand-in for the ScrollBoxRenderable, handed over the way the reconciler
+   * hands a ref.
+   *
+   * It exposes only what the real renderable has, and that restriction is the
+   * whole point. The first version of this fake also carried a `maxScrollTop`
+   * property, the adapter clamped against it, and every test passed -- while the
+   * real `maxScrollTop` is a local `const` inside five of the host's methods and
+   * `this.maxScrollTop` appears nowhere, so the clamp was `Math.min(next,
+   * undefined)` and `scrollTo(NaN)` blanked the panel. A stub that invents the
+   * member the code is wrong about cannot catch the code being wrong about it.
+   *
+   * So: `scrollTop` and `scrollTo` only, plus the two plain fields the scrollbar's
+   * own setter does its arithmetic on -- `scrollSize` and `viewportSize` both
+   * really are members of `ScrollBarRenderable` -- and `scrollTo` transcribes
+   * that setter rather than storing the number it was given. The clamp under test
+   * is therefore the host's arithmetic, not a number this file asserts.
+   */
+  function fakeScrollBox(scrollTop: number, scrollSize: number, viewportSize: number, asked: number[]) {
+    return {
+      scrollTop,
+      scrollSize,
+      viewportSize,
+      scrollTo(n: number) {
+        asked.push(n)
+        // ScrollBarRenderable.set scrollPosition, @opentui/core index.node.js
+        // line 13855.
+        this.scrollTop = Math.round(Math.min(Math.max(0, n), this.scrollSize - this.viewportSize))
+      },
+    }
+  }
+
+  /** The scrollbox element, found the same way `markdownOf` finds it. */
+  function scrollboxOf(element: any): any {
+    return elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+  }
+
   it("hands the markdown path a writer that drives the scrollbox", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     const renderer = createMockRenderer()
@@ -514,37 +551,49 @@ describe("the writer handed to the keymap", () => {
       scrollTo: (fn: any) => (writer = fn),
     })
 
-    // A stand-in for the ScrollBoxRenderable, handed over the way the reconciler
-    // hands a ref. `scrollTop` is the source of truth the adapter reads.
-    const scrolled: number[] = []
-    const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
-    box.props.ref({ scrollTop: 7, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
+    // Forty rows of content in a ten-row viewport, so there is plenty of room and
+    // the clamp is not what decides this answer.
+    const asked: number[] = []
+    const box = fakeScrollBox(7, 40, 10, asked)
+    scrollboxOf(element).props.ref(box)
     const framesBefore = renderer.frames()
 
     // The plugin always calls with an updater over the previous position, which is
     // what scrollByLine produces.
     writer((prev: number) => prev + 1)
 
-    expect(scrolled).toEqual([8])
+    expect(asked).toEqual([8])
+    expect(box.scrollTop).toBe(8)
     expect(renderer.frames()).toBeGreaterThan(framesBefore)
   })
 
-  it("clamps the markdown scroll against the scrollbox's own maximum", () => {
-    // The sentinel line count handed to the keymap cannot clamp, so this side has
-    // to -- otherwise the bottom of a long file is unreachable.
+  it("passes the markdown scroll through and lets the scrollbox clamp it", () => {
+    /*
+     * The clamp is not the adapter's, and this is the test that says so.
+     *
+     * The box is already at the bottom -- thirty rows of content in a ten-row
+     * viewport, so twenty is as far as it can go -- and one more `down` asks for
+     * twenty-one. Both halves matter: the adapter must hand the box the value it
+     * was asked for rather than a bound it invented, and the box must be what puts
+     * it back in range. Re-introduce an adapter-side clamp against a property the
+     * renderable does not have and the recorded value is NaN here.
+     */
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     let writer: any
     const element = mount(path, 5, createMockRenderer(), {
       theme: mdTheme,
       scrollTo: (fn: any) => (writer = fn),
     })
-    const scrolled: number[] = []
-    const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
-    box.props.ref({ scrollTop: 100, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
+    const asked: number[] = []
+    const box = fakeScrollBox(20, 30, 10, asked)
+    scrollboxOf(element).props.ref(box)
 
     writer((prev: number) => prev + 1)
 
-    expect(scrolled).toEqual([100])
+    // Asked for 21 -- unclamped, because the adapter does not clamp -- and left
+    // at 20, which is the clamp that actually runs.
+    expect(asked).toEqual([21])
+    expect(box.scrollTop).toBe(20)
   })
 
   it("still hands the text path its own offset signal", () => {

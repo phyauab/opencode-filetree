@@ -209,21 +209,36 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * signal: the offset lives in the renderable, which does its own scrolling,
    * and a signal nobody reads moves nothing.
    *
-   * The clamp is this side's because it is the only one that knows the rendered
-   * height. `openViewer` in `tui.tsx` hands the keymap a line count that
-   * deliberately cannot clamp, so `scrollByLine` will keep asking for one more
-   * row than there is; left unclamped the bottom of a long file would be
-   * unreachable, and overshooting it would leave the panel blank. `box.maxScrollTop`
-   * is the renderable's own answer, computed after it laid out.
+   * The clamp is NOT this side's, and a first draft that clamped here is worth
+   * recording because it shipped a critical and every test passed. It clamped
+   * against `box.maxScrollTop`, which reads as a property and is not one: in
+   * `@opentui/core` every occurrence of that name (index.node.js lines 14258,
+   * 14287, 14494, 14690 and 14720) is a local `const` inside a method, and
+   * `this.maxScrollTop` does not appear at all. So the read was `undefined`,
+   * `Math.min(next, undefined)` was `NaN`, `Math.max(0, NaN)` was `NaN`, and
+   * `scrollTo(NaN)` left the box with a NaN scroll position -- the panel stops
+   * scrolling and says nothing. A stub that declares the property the real
+   * renderable lacks cannot catch that, which is exactly what this had.
+   *
+   * The scrollbar clamps, and it is the side that knows the real content size.
+   * `ScrollBoxRenderable.scrollTo` (14482-14484) assigns `this.scrollTop`, the
+   * `scrollTop` setter (14236-14237) forwards to `verticalScrollBar.scrollPosition`
+   * with no clamp of its own, and `ScrollBarRenderable`'s `scrollPosition` setter
+   * (13854-13855) does `Math.round(Math.min(Math.max(0, value), this.scrollSize -
+   * this.viewportSize))` -- the same expression `maxScrollTop` would have been,
+   * computed from the post-layout viewport rather than from a guess. That is
+   * also why the unbounded line count `openViewer` hands the keymap is safe: an
+   * overshoot arrives at the setter and comes back as the last legal row.
    */
   const markdownScroll: Setter<number> = (value) => {
-    const box = markdownBox as
-      | { scrollTop: number; maxScrollTop: number; scrollTo(n: number): void }
-      | undefined
+    const box = markdownBox as { scrollTop: number; scrollTo(n: number): void } | undefined
     if (!box) return 0
     const updater = typeof value === "function" ? value : () => value
     const next = updater(box.scrollTop)
-    box.scrollTo(Math.max(0, Math.min(next, box.maxScrollTop)))
+    // Passed through unclamped on purpose. See the comment above: clamping here
+    // means guessing a bound the renderable has not published, and the one guess
+    // this made was against a property that does not exist.
+    box.scrollTo(next)
     // The repaint effect above reads the signal and `height`, and neither of
     // them moved: the scrollbox did. The renderer is demand-driven, so this is
     // the only thing that will ask for the frame that shows the result -- the
@@ -301,7 +316,8 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * writes -- a runaway, a negative, one left over from a taller panel -- can
    * put the window outside the file. The plugin's `scrollByLine`/`scrollByPage`
    * clamp as well, so the next keypress puts a legal value back. The markdown
-   * side clamps itself, for the reason its own adapter gives.
+   * side clamps nothing and needs to: the box clamps, for the reason its own
+   * adapter gives.
    */
   if (markdown) {
     props.scrollTo?.(markdownScroll)

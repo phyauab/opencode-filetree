@@ -83,7 +83,7 @@ export default Plugin.define({
      *
      * Markdown is the one value that is not a line count: `openViewer` hands the
      * keymap a sentinel there, because the preview's rendered height is not its
-     * line count and the scrollbox's own adapter does the clamping instead.
+     * line count and the scrollbox's scrollbar clamps for real instead.
      *
      * Read again here rather than taken from the viewer, which hands over only
      * its writer; see the comment on `openViewer` for why a second read is the
@@ -105,7 +105,7 @@ export default Plugin.define({
      * Nothing re-clamps on the way in. `scrollByLine`/`scrollByPage` bound the
      * step against the line count and row count, the viewer's `offset()` clamps
      * every read of the offset on the Prism path, and on the markdown path the
-     * writer handed over instead clamps against the scrollbox's own maximum -- so
+     * value reaches the scrollbox's scrollbar, whose own setter clamps it -- so
      * no value written from here can put the window outside the file.
      */
     let setViewerScroll: Setter<number> | undefined
@@ -205,8 +205,8 @@ export default Plugin.define({
        * maxScroll(lines, rows), which for any file shorter than the panel is 0 --
        * the reader could never reach the bottom of a three-line markdown file
        * that renders thirty rows. The sentinel keeps that clamp from binding at
-       * all and leaves the real one to the scrollbox's own adapter, which knows
-       * `maxScrollTop` after it has laid out.
+       * all and leaves the real one to the scrollbox's scrollbar, whose setter
+       * clamps to `scrollSize - viewportSize` once it knows the real layout.
        *
        * The sentinel is the largest safe integer rather than a generous guess,
        * because a guess is a number a long file can exceed: 100000 would clip a
@@ -220,7 +220,14 @@ export default Plugin.define({
       // Fullscreen so the viewer covers the main area rather than sitting in a
       // side column. Easily reverted: drop the second argument.
       setViewerOpen(context.ui.panel.open(VIEWER_PANEL, { presentation: "fullscreen" }))
-      trace("viewer.open", { path: entry.path, lines: viewerLines(), kind: file.kind })
+      // The sentinel is not a line count, and a trace that logs 9007199254740991
+      // under a field called `lines` invites whoever reads it to take it for one
+      // -- then to go looking for the file that has nine quadrillion rows.
+      trace("viewer.open", {
+        path: entry.path,
+        lines: viewerLines() === Number.MAX_SAFE_INTEGER ? "unbounded: the scrollbox clamps" : viewerLines(),
+        kind: file.kind,
+      })
     }
 
     /**
