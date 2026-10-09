@@ -191,7 +191,9 @@ export default Plugin.define({
       setViewerPath(entry.path)
       setViewerLines(file.kind === "text" ? file.totalLines : 0)
       context.ui.panel.close()
-      setViewerOpen(context.ui.panel.open(VIEWER_PANEL))
+      // Fullscreen so the viewer covers the main area rather than sitting in a
+      // side column. Easily reverted: drop the second argument.
+      setViewerOpen(context.ui.panel.open(VIEWER_PANEL, { presentation: "fullscreen" }))
       trace("viewer.open", { path: entry.path, lines: viewerLines(), kind: file.kind })
     }
 
