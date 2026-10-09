@@ -8,21 +8,29 @@
 
 /** Largest legal scroll offset: keeps at least one line on screen. */
 export function maxScroll(totalLines: number, visibleRows: number): number {
-  // A zero-height render area would otherwise make the subtraction negative and
-  // hand back an offset no line can be drawn at, which is the "end of file,
-  // blank panel" failure the clamp below is meant to make impossible.
+  // A panel that has not been laid out yet reports zero rows. Left alone that
+  // would make the offset totalLines - 0, which is one past the end of the
+  // file, so scrolling to the bottom would paint a blank panel. One row is the
+  // least a viewer can honestly claim to show. The max(0, ...) covers the
+  // opposite case, where a panel taller than the file would make the
+  // subtraction negative.
   const rows = Math.max(1, visibleRows)
   return Math.max(0, totalLines - rows)
 }
 
-/** Confines an offset to the scrollable range. */
-function clamp(offset: number, totalLines: number, visibleRows: number): number {
-  return Math.min(Math.max(offset, 0), maxScroll(totalLines, visibleRows))
+/**
+ * Confines an offset to the scrollable range.
+ *
+ * Takes the already-computed limit rather than the line and row counts, so a
+ * transposed pair of numbers cannot compile here.
+ */
+function clampTo(offset: number, limit: number): number {
+  return Math.min(Math.max(offset, 0), limit)
 }
 
 /** Offset after a line-step, clamped to [0, maxScroll]. */
 export function scrollByLine(scroll: number, delta: number, totalLines: number, visibleRows: number): number {
-  return clamp(scroll + delta, totalLines, visibleRows)
+  return clampTo(scroll + delta, maxScroll(totalLines, visibleRows))
 }
 
 /** Offset after a page-step, clamped the same way. */
@@ -33,8 +41,8 @@ export function scrollByPage(
   visibleRows: number,
 ): number {
   // Half a screen, so the reader keeps their place when the step reverses
-  // direction. The floor of one keeps the key live on a two-row panel, where
-  // the half would otherwise be zero and the key would appear stuck.
-  const step = Math.max(1, Math.floor(Math.max(1, visibleRows) / 2))
-  return clamp(scroll + direction * step, totalLines, visibleRows)
+  // direction. The floor of one keeps the key live on a one-row panel, whose
+  // half is zero and would leave the key apparently stuck.
+  const step = Math.max(1, Math.floor(visibleRows / 2))
+  return clampTo(scroll + direction * step, maxScroll(totalLines, visibleRows))
 }

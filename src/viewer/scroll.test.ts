@@ -25,7 +25,13 @@ describe("scrollByLine", () => {
     expect(scrollByLine(0, 5000, 100, 40)).toBe(60)
   })
 
-  it("clamps at the start for a negative delta", () => {
+  // A file that fits the panel has no scrollable range at all, so the runaway
+// keypress must land on 0 rather than on a non-zero offset.
+it("cannot scroll a file that fits, however far it is pushed", () => {
+  expect(scrollByLine(0, 5000, 12, 40)).toBe(0)
+})
+
+it("clamps at the start for a negative delta", () => {
     expect(scrollByLine(10, -5000, 100, 40)).toBe(0)
   })
 
