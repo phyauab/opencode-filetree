@@ -80,20 +80,39 @@ const TOKEN_COLORS: Record<string, string | undefined> = {
   punctuation: undefined,
 }
 
-/** Resolves a token's colour, following its alias list when the type has none. */
-function colorFor(token: Token): string | undefined {
-  const own = TOKEN_COLORS[token.type]
-  if (own !== undefined) return own
-  // Markdown marks inline code as type `code-snippet` with alias
-  // ["code", "keyword"], and nothing in the table maps the type itself.
-  // Resolving the alias is what colours `` `code` `` in a .md file instead of
-  // leaving it plain. Aliases are only consulted when the type is unmapped, so
-  // this can never override an explicit mapping above.
+/**
+ * Resolves a token's colour, consulting its alias list only when the token's own
+ * type has no entry in the table.
+ *
+ * Returns `undefined` when neither the type nor any of its aliases has an
+ * entry, which is the caller's cue to inherit the enclosing token's colour.
+ * A result whose `color` is `undefined` means the opposite and is deliberate:
+ * the type is mapped to the theme default, which is what `operator` and
+ * `punctuation` are for.
+ *
+ * The test is key presence (`in`) rather than a non-undefined value, and it has
+ * to be. Comparing the value cannot tell "mapped to the default on purpose"
+ * apart from "no mapping at all", so `operator` and `punctuation` read as
+ * unmapped and a nested `+` or `${` fell through to the enclosing token: the
+ * plus in `` `a + ${b + c}` `` rendered green as part of the string, and a
+ * TypeScript generic's `<` rendered cyan as part of the `class-name` it aliases
+ * to. Both are pinned by tests below.
+ */
+function colorFor(token: Token): { color: string | undefined } | undefined {
+  if (token.type in TOKEN_COLORS) return { color: TOKEN_COLORS[token.type] }
+
+  // Aliases are Prism's own "treat this as that" declaration, and several
+  // grammars name a type the table does not carry while declaring what it
+  // means: `template-punctuation` as `string` (the backticks around a template
+  // literal), `generic` as `class-name`, `interpolation-punctuation` as
+  // `punctuation`. Reached only when the type itself has no entry, so an alias
+  // cannot override one -- and the first alias with an entry wins, which is what
+  // makes markdown's ordered ['code', 'keyword'] list come out green rather than
+  // magenta.
   const alias = token.alias
   if (alias === undefined) return undefined
   for (const name of typeof alias === "string" ? [alias] : alias) {
-    const color = TOKEN_COLORS[name]
-    if (color !== undefined) return color
+    if (name in TOKEN_COLORS) return { color: TOKEN_COLORS[name] }
   }
   return undefined
 }
@@ -121,7 +140,11 @@ function collect(tokens: StreamToken[], inherited: string | undefined, out: Piec
       if (token !== "") out.push({ text: token, color: inherited })
       continue
     }
-    const color = colorFor(token) ?? inherited
+    // A resolved result is used even when its colour is undefined: that is a
+    // type mapped to the theme default, which must not inherit the enclosing
+    // token's colour. Only an unresolved token inherits.
+    const resolved = colorFor(token)
+    const color = resolved !== undefined ? resolved.color : inherited
     if (Array.isArray(token.content)) collect(token.content, color, out)
     else if (token.content !== "") out.push({ text: token.content, color })
   }

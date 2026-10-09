@@ -176,10 +176,73 @@ describe("grammar registration", () => {
     expect(lines[0]!.find((s) => s.text === "Bar")?.color).toBe("cyan")
   })
 
-  it("colours markdown inline code, which only its alias names", () => {
-    // The token type is `code-snippet`, aliased to ["code", "keyword"], so the
-    // mapping is unreachable without resolving aliases.
+  it("colours markdown inline code through its own mapping", () => {
+    // `code-snippet` is a key in TOKEN_COLORS in its own right, so this resolves
+    // directly and never reaches the alias branch.
     const lines = highlightLines("some `code` text", "markdown")
     expect(lines[0]!.find((s) => s.text === "`code`")?.color).toBe("green")
+  })
+
+  // The alias branch is live for types the table does not carry. `generic` is
+  // named `class-name` by Prism, so `Foo<T>()` resolves it to the class-name
+  // cyan. A direct-lookup-only implementation leaves the whole generic plain.
+  it("resolves an aliased token type the table does not carry", () => {
+    const lines = highlightLines("Foo<T>()", "typescript")
+    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("cyan")
+    expect(lines[0]!.find((s) => s.text === "T")?.color).toBe("yellow")
+  })
+
+  it("resolves a single-string alias to its colour", () => {
+    // Prism tags the backticks around a template literal
+    // `template-punctuation`, aliased to "string". The alias is the only reason
+    // they are green rather than theme default.
+    const lines = highlightLines("const s = `x`", "typescript")
+    const backticks = lines[0]!.filter((s) => s.text === "`")
+    expect(backticks).toHaveLength(2)
+    for (const tick of backticks) expect(tick.color).toBe("green")
+  })
+})
+
+// TOKEN_COLORS maps `operator` and `punctuation` to undefined, meaning the
+// theme default. undefined is also what an unmapped type produces, so these pin
+// the two apart: a nested operator or punctuation must render in the default
+// colour, not in the colour of whatever token encloses it.
+describe("nested operators and punctuation keep the theme default", () => {
+  it("leaves an interpolated plus in the default colour", () => {
+    // Only the `+` inside `${...}` is a separate operator token; the one in
+    // "a + " is part of the surrounding string literal and is green as text.
+    const lines = highlightLines("const s = `a + ${b + c}`", "typescript")
+    expect(lines[0]!.find((s) => s.text.includes("a + "))?.color).toBe("green")
+    const plus = lines[0]!.filter((s) => s.text === "+")
+    expect(plus).toHaveLength(1)
+    // Inheriting from the enclosing token rendered this green as part of the
+    // string, so the assertion is on undefined rather than on any colour.
+    expect(plus[0]!.color).toBeUndefined()
+  })
+
+  it("leaves interpolation punctuation in the default colour", () => {
+    // `interpolation-punctuation` is aliased to `punctuation`, which is mapped
+    // to undefined. The alias has to resolve *to* the default rather than fail
+    // to resolve and inherit the surrounding string's green.
+    const lines = highlightLines("const s = `${a}`", "typescript")
+    for (const span of lines[0]!) {
+      if (span.text.includes("${") || span.text === "}") expect(span.color).toBeUndefined()
+    }
+  })
+
+  it("leaves generic brackets in the default colour, not the aliased cyan", () => {
+    // The `<` and `>` are operators nested inside a token whose alias resolves
+    // to the class-name cyan.
+    const lines = highlightLines("Foo<T>()", "typescript")
+    const angles = lines[0]!.filter((s) => s.text === "<" || s.text === ">")
+    expect(angles).toHaveLength(2)
+    for (const angle of angles) expect(angle.color).toBeUndefined()
+  })
+
+  it("still inherits the enclosing colour for a type with no mapping at all", () => {
+    // The other half of the distinction: an unmapped nested token does inherit,
+    // which is what keeps `class Foo` colouring the name cyan.
+    const lines = highlightLines("class Foo {}", "typescript")
+    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("cyan")
   })
 })
