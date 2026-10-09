@@ -2,6 +2,7 @@ import { createEffect, createSignal, type Component, type Setter } from "solid-j
 import type { Context } from "@opencode/plugin/tui/context"
 import { basename } from "node:path"
 import { highlightLines, languageFor, type HighlightedLine } from "./highlight"
+import { buildSyntaxStyle, isMarkdown, type MarkdownTheme } from "./markdown"
 import { readForView, type ViewFile } from "./readForView"
 import { maxScroll } from "./scroll"
 
@@ -91,6 +92,16 @@ function messageFor(file: Exclude<ViewFile, { kind: "text" }>): string {
 }
 
 /**
+ * `Context["theme"]` is typed as an unresolved import -- `@opencode/plugin/tui/context`
+ * borrows it from `@opentui/core`, which is a runtime package this plugin must
+ * not ship a copy of -- so the one cast that bridges it lives here rather than at
+ * the use site.
+ */
+function themeOf(context: Context): MarkdownTheme | undefined {
+  return (context as { theme?: MarkdownTheme }).theme
+}
+
+/**
  * The props for one coloured run of text inside a row.
  *
  * The colour goes in `style`, not in a bare `fg`, and that is load-bearing
@@ -135,7 +146,31 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const file = readForView(props.path)
 
   const lines = file.kind === "text" ? file.lines : []
-  const spans = tokenize(lines, props.path)
+  /*
+   * Markdown is a different renderer, not a different colouring of the same one:
+   * `MarkdownRenderable` parses and lays out its own blocks, so it never sees the
+   * line-by-line span pipeline and does not need it. `buildSyntaxStyle` cannot
+   * return undefined -- it falls back to the empty style, which is what the host
+   * itself uses -- so there is no colour-driven fork back to the Prism path. A
+   * thin theme buys an uncoloured preview, never raw source.
+   */
+  const markdown = isMarkdown(props.path) && file.kind === "text"
+  const syntaxStyle = markdown ? buildSyntaxStyle(themeOf(context)) : undefined
+  const spans = markdown ? [] : tokenize(lines, props.path)
+
+  /*
+   * The scrollbox's own renderable, captured for the keymap's scroll adapter.
+   *
+   * One closure per mount on purpose: the solid runtime calls `ref` inside a
+   * render effect keyed on the function itself, so a fresh arrow per render
+   * re-subscribes on every state change. That is the defect `FileTree`'s
+   * `captureRoot` carried until its ref was made stable the same way, and it is
+   * why the `let` and the writer sit together here rather than in the JSX.
+   */
+  let markdownBox: unknown
+  const captureMarkdownBox = (el: unknown) => {
+    markdownBox = el
+  }
 
   /*
    * The offset is a signal rather than a prop because nothing above the panel
@@ -184,6 +219,24 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     // it kept against the size of the file, so the notice cannot mean "the cap
     // is larger than this file", which is the common case.
     return file.truncated ? `${position} — first ${file.totalLines} lines` : position
+  }
+
+  /**
+   * The header for markdown: the name, and the truncation notice when there is
+   * one. No line range.
+   *
+   * The range is dropped because it would be a number the reader cannot map to
+   * anything on screen. Markdown's rendered height is not its line count -- a
+   * paragraph wraps, a list gains markers, blocks are separated by blank rows --
+   * so `1-5 of 3` is both possible and meaningless, and a scroll position the
+   * scrollbox owns is not a line of the file. The pruning notice survives,
+   * because "first 2000 lines" is a fact about what was read and holds whatever
+   * the renderer then does with it.
+   */
+  const markdownHeader = () => {
+    const name = basename(props.path)
+    if (file.kind !== "text") return name
+    return file.truncated ? `${name} — first ${file.totalLines} lines` : name
   }
 
   /** The gutter's width, so the numbers do not shuffle as the window moves. */
@@ -281,6 +334,31 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
       ))}
     </text>
   )
+
+  /*
+   * Markdown's own branch, ahead of the text one and returning through it
+   * rather than into it: the scrollbox owns the scrolling, so everything the
+   * text path does with `offset`, `rows` and the gutter would be work thrown
+   * away. A separate return also keeps the two shapes from being threaded
+   * together by a ternary, which is how a shared header ended up carrying a line
+   * range for a file that has none.
+   *
+   * The `syntaxStyle` assertion is `buildSyntaxStyle`'s own guarantee rather
+   * than a guess: it falls back to `SyntaxStyle.create()` when the theme is
+   * thin, so the only way the body's variable is undefined is its other arm.
+   */
+  if (markdown) {
+    return (
+      <box flexDirection="column">
+        <text fg="dim" wrapMode="none" truncate>
+          {markdownHeader()}
+        </text>
+        <scrollbox flexGrow={1} ref={captureMarkdownBox}>
+          <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />
+        </scrollbox>
+      </box>
+    )
+  }
 
   return (
     <box flexDirection="column">

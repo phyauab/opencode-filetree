@@ -54,7 +54,16 @@ function makeContext(renderer: any, path: string) {
  * component hands out; passing one is how a test stands in for a keypress.
  */
 function mount(path: string, height: number, renderer: any = createMockRenderer(), extra: any = {}) {
-  return (FileViewer as any)({ path, height, context: makeContext(renderer, path), ...extra })
+  // `theme` belongs on the context, not on the component's props, because the
+  // viewer reads `context.theme`. It is pulled out of `extra` so every existing
+  // call -- which passes no theme -- is unchanged and simply gets `undefined`.
+  const { theme, ...props } = extra
+  return (FileViewer as any)({
+    path,
+    height,
+    context: { ...makeContext(renderer, path), theme },
+    ...props,
+  })
 }
 
 /** Every element in a `children` prop, however deeply nested. */
@@ -372,5 +381,71 @@ describe("VIEWER_ROWS_CHROME", () => {
     // content row, so it spends no row of its own, and a caller that believed
     // otherwise would subtract a line of file to keep nothing.
     expect(VIEWER_ROWS_CHROME).toBe(2)
+  })
+})
+
+/** A theme carrying only the markdown heading token, which is enough to mark a
+ *  file as markdown and no more. */
+const mdTheme = { markdown: { heading: "#e06c75" } }
+
+/**
+ * The markdown element, which is the scrollbox's only child.
+ *
+ * `elements` flattens arrays and does not descend into an element's own
+ * `children`, so it stops at the scrollbox. Walking that one step here is what
+ * Task 3's scroll adapter test has to do too, to reach `ref` on the same box.
+ */
+function markdownOf(element: any): any {
+  const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+  return elements(box?.props?.children).find((child: any) => child.type === "markdown")
+}
+
+describe("a markdown file", () => {
+  it("renders markdown files through a scrollbox and a markdown element", () => {
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const children = elements(element?.props?.children)
+    expect(children.some((child: any) => child.type === "scrollbox")).toBe(true)
+    expect(markdownOf(element)).toBeTruthy()
+  })
+
+  it("passes the whole file to the markdown element and conceals the markers", () => {
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const md = markdownOf(element)
+    expect(md.props.content).toBe("# Title\n\nsome text")
+    expect(md.props.conceal).toBe(true)
+  })
+
+  it("leaves code files on the Prism path", () => {
+    const path = makeFile("a.ts", "const a = 1\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const children = elements(element?.props?.children)
+    expect(children.some((child: any) => child.type === "markdown")).toBe(false)
+    expect(children.some((child: any) => child.type === "scrollbox")).toBe(false)
+    expect(rowsOf(element)).toEqual(["1 │ const a = 1"])
+  })
+
+  it("shows the file name alone in the markdown header, with no line range", () => {
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    expect(headerOf(element)).toBe("readme.md")
+  })
+
+  it("still renders markdown when the theme carries nothing usable", () => {
+    // Review Focus #2: a thin theme buys an uncoloured preview, never a return to
+    // raw markdown source -- which is the complaint this feature exists to fix.
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: {} })
+    expect(markdownOf(element)).toBeTruthy()
+    // The Prism rows are gone with them: the only thing after the header is the
+    // scrollbox, which renders no text of its own in the stub.
+    expect(rowsOf(element)).toEqual([""])
+  })
+
+  it("still renders markdown when there is no theme at all", () => {
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), {})
+    expect(markdownOf(element)).toBeTruthy()
   })
 })
