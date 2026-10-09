@@ -61,6 +61,47 @@ const realMarkdown = (lines: number): string => {
   return path
 }
 
+/**
+ * Every object in a stub `children` prop, however deeply nested.
+ *
+ * The same walk `FileViewer.test.ts`'s `elements` does, restated because a test
+ * file cannot import another one. The stub's JSX runtime records a plain
+ * description of the tree, so the rendered scrollbox is reachable by walking
+ * `children` and not only by rendering.
+ */
+function childElements(children: unknown): any[] {
+  const list = Array.isArray(children) ? children.flat(Infinity) : [children]
+  return list.filter((child): child is any => Boolean(child) && typeof child === "object")
+}
+
+/**
+ * A stand-in for the ScrollBoxRenderable, faithful to the host's arithmetic.
+ *
+ * The shape of `FileViewer.test.ts`'s `fakeScrollBox`, restated for the same
+ * reason: a test file cannot import another one. `scrollTo` transcribes
+ * `ScrollBarRenderable`'s `scrollPosition` setter --
+ * `Math.round(Math.min(Math.max(0, value), scrollSize - viewportSize))` -- rather
+ * than storing the number it was given, so the clamp under test is the host's
+ * and not a number this file asserts.
+ *
+ * It carries only `scrollTop`, `scrollSize`, `viewportSize` and `scrollTo`, and
+ * that restriction is the point. An earlier fake also declared a `maxScrollTop`
+ * property, which the real renderable does not have, and every test passed while
+ * the adapter clamped against `undefined`. A stub that invents the member the
+ * code is wrong about cannot catch the code being wrong about it.
+ */
+function fakeScrollBox(scrollTop: number, scrollSize: number, viewportSize: number, asked: number[]) {
+  return {
+    scrollTop,
+    scrollSize,
+    viewportSize,
+    scrollTo(n: number) {
+      asked.push(n)
+      this.scrollTop = Math.round(Math.min(Math.max(0, n), this.scrollSize - this.viewportSize))
+    },
+  }
+}
+
 /** Captures what the plugin registers, and lets a test make calls fail. */
 function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: boolean } = {}) {
   const slots: { claim: any }[] = []
@@ -290,6 +331,23 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
      * own signal in step while the test watches from the outside. The shadow
      * value is the one the component's signal also holds, so the recorded steps
      * are the real offsets and not a second opinion about them.
+     *
+     * KEEPING the writer the component hands over is the load-bearing half of
+     * that, and it is worth recording what dropping it cost. The first version
+     * threw the writer away and registered its own updater in its place, so
+     * `setViewerScroll` held a value the component's state never moved. On the
+     * Prism path that is invisible -- the shadow and the signal agree because
+     * the step is the same arithmetic -- and on the markdown path it is the
+     * whole feature: the adapter, the captured box and the clamp were never
+     * invoked by anything at this level, so "a keypress reaches the scrollbox"
+     * was implied and never executed. That is the same gap shape the
+     * `maxScrollTop` critical shipped through, where a fake declared a property
+     * the renderable lacks and no test crossed from the plugin side into it.
+     *
+     * So the writer is kept, and what the plugin ends up holding is a
+     * pass-through to it rather than a substitute for it. The recording below
+     * still watches what the plugin asks for; the difference is that asking
+     * now reaches the component, and through it the renderable.
      */
     viewerOffsets: () => {
       const element = slots.find((s) => s.claim.append === "session.panel")!.claim.render({
@@ -300,15 +358,36 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
       const forward = props.scrollTo
       let shadow = 0
       const written: number[] = []
-      props.scrollTo = (setScroll: (fn: (prev: number) => number) => void) => {
-        forward((fn: (prev: number) => number) => {
-          shadow = fn(shadow)
+      /** The writer the component handed to `props.scrollTo`, kept not replaced. */
+      let held: ((value: number | ((prev: number) => number)) => number) | undefined
+      props.scrollTo = (setScroll: (value: number | ((prev: number) => number)) => number) => {
+        held = setScroll
+        forward((value: number | ((prev: number) => number)) => {
+          const updater = typeof value === "function" ? value : () => value
+          shadow = updater(shadow)
           written.push(shadow)
-          return shadow
+          // The component's own writer, driven with the updater the plugin
+          // produced. This is the line that makes the chain run end to end
+          // rather than stopping at the recording.
+          return held!(value)
         })
       }
-      element.type(props)
-      return { written, offset: () => shadow }
+      // The claim's render hands back the component's own element description;
+      // calling it is what runs the body, and its result is the root box whose
+      // `children` are `[header, scrollbox]` on the markdown path.
+      const root = element.type(props)
+      return {
+        written,
+        offset: () => shadow,
+        writer: () => held,
+        /**
+         * The rendered scrollbox, so a test can hand it a fake box the way the
+         * reconciler hands a ref. `undefined` on the text path, which has no
+         * scrollbox to hand anything to.
+         */
+        scrollbox: () =>
+          childElements(root?.props?.children).find((child: any) => child.type === "scrollbox"),
+      }
     },
     /** Is the viewer layer live right now? */
     viewerEnabled: () => {
@@ -988,6 +1067,54 @@ describe("plugin entry (sidebar spike)", () => {
     const down = m.command("filetree.viewer.down")
     for (let i = 0; i < 10; i++) down?.run?.()
     expect(written[written.length - 1]).toBe(10)
+  })
+
+  itRender("a keypress on a markdown file moves the scrollbox the renderer holds", async () => {
+    /*
+     * The seam, run end to end.
+     *
+     * Both halves of this were already covered and neither covered the join.
+     * The component's own writer drives the captured box and the box's scrollbar
+     * does the clamping (`FileViewer.test.ts`); the plugin asks the writer to
+     * move and records what it asked (`viewerOffsets` above). What nothing ran
+     * was the composition -- until this round the helper handed the plugin a
+     * *substitute* writer, so the adapter, the box and the clamp were never
+     * invoked from the plugin side at all. That is the same gap shape the
+     * `maxScrollTop` critical shipped through: a fake declared a property the
+     * renderable lacks and no test ever crossed from the plugin into it.
+     *
+     * So the real `filetree.viewer.down` command is what drives this, and that is
+     * the direction worth pinning. It is strictly stronger than calling
+     * `writer()` directly, because it executes keypress -> the writer the plugin
+     * holds -> the component's own adapter -> the renderable; the direct drive
+     * would only re-run the middle of that chain, which the component's suite
+     * already pins and which `writer()` remains available for.
+     */
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.md", path: realMarkdown(3), isDirectory: false }])
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+    // Forty rows of content in a ten-row viewport, so the scrollbar's clamp is
+    // nowhere near this answer and the assertion is about the step, not the bound.
+    const asked: number[] = []
+    const box = fakeScrollBox(0, 40, 10, asked)
+    viewer.scrollbox()!.props.ref(box)
+
+    m.command("filetree.viewer.down")!.run()
+
+    // The box was asked for the next row and left there, which means the writer
+    // the plugin holds really is the one the component handed over: only that
+    // writer reads `scrollTop` off the renderable.
+    expect(asked).toEqual([1])
+    expect(box.scrollTop).toBe(1)
+    // The recorded offset and the box's own position are the same number here,
+    // the one case in this suite where the two can be compared at all.
+    expect(viewer.written).toEqual([1])
   })
 
   itRender("up from the first line stays on the first line", async () => {

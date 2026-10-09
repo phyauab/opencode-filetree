@@ -106,6 +106,25 @@ priority, not a focus check: the host re-asserts focus on the prompt about a
 second after anything takes it, so a gate that read focus would flap. The
 tree claims its keys the same way, for the same reason.
 
+### Markdown files
+
+A `.md` file is rendered as markdown rather than as source: headings, lists,
+emphasis, links and fenced blocks are laid out by the host's own markdown
+renderer, and the `#` and `*` markers are concealed. It scrolls with the same
+`up` / `down` / `pageup` / `pagedown` keys, through a scrollbox, so a long
+document reaches its bottom however many rows it renders -- a three-line
+markdown file that renders thirty rows is not clamped to three.
+
+**The colouring is deliberately not the same on the two paths.** Code files
+are coloured from a fixed One Dark table in `highlight.ts`; markdown is
+coloured from the host theme, because that is what makes a `.md` preview look
+like every other markdown surface in the host rather than a second opinion
+about it. The same snippet therefore comes out in different colours in a `.ts`
+file and inside a ```ts fence in a `.md` file. That is the intended split and
+not a bug: one owner for "what colour is this token" per renderer, two
+renderers, and the theme-following one is the one whose whole job is to match
+the host.
+
 ### It needs `bun install` before it will build
 
 The viewer tokenises each file it opens, so the plugin now depends on Prism at
@@ -281,6 +300,7 @@ that touches the terminal's dimensions.
 | `src/icons.ts` | Icons, git status labels, hidden-directory rules |
 | `src/TreeNode.tsx` | One row of the tree |
 | `src/viewer/FileViewer.tsx` | The viewer: gutter, header, window, repaint |
+| `src/viewer/markdown.ts` | Which files render as markdown, and their theme-driven colours |
 | `src/viewer/readForView.ts` | Reading a file for display, with byte and line caps |
 | `src/viewer/highlight.ts` | Prism tokenizer driven by file extension |
 | `src/viewer/scroll.ts` | Pure scroll maths for the viewer |

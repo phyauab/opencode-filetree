@@ -494,6 +494,55 @@ describe("a markdown file", () => {
 
     expect(headerOf(element)).toContain(`first ${MAX_VIEW_LINES} lines`)
   })
+
+  it("bounds the markdown path to the rows the panel measured", () => {
+    /*
+     * The row budget, asserted on the one branch that used to read it for
+     * nothing.
+     *
+     * `flexGrow={1}` only produces a bounded viewport if the host stretches the
+     * claim's element out to the panel area, and nothing in this repo has ever
+     * observed that it does. Left to its natural height the root box gives the
+     * scrollbox no viewport, `scrollSize - viewportSize` is 0, and the
+     * scrollbar's own setter clamps every keypress back to 0 -- markdown
+     * scrolling is inert on every file while the panel still clips to its top
+     * rows. The text path is immune because it slices rows to fit either way;
+     * this one does not slice, which is the whole point of having it.
+     *
+     * The height arrives through a getter over a signal, exactly as
+     * babel-preset-solid compiles `height={viewerHeight()}` in the plugin's JSX.
+     * The re-mount below is what stands in for the reconciler re-reading that
+     * JSX, and it is what separates a live read from a value snapshotted when
+     * the body first ran.
+     */
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const renderer = createMockRenderer()
+    const [height, setHeight] = createSignal(12)
+    const props: any = {
+      path,
+      context: makeContext(renderer, path),
+      get height() {
+        return height()
+      },
+    }
+
+    const element = (FileViewer as any)(props)
+    expect(element.props.height).toBe(12)
+    // The other half of the bound. Either alone leaves the viewport
+    // undetermined: a height with no grow gives a fixed box that may not fill
+    // the panel, and a grow with no height gives a box with no measured extent.
+    const scrollbox = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+    expect(scrollbox?.props.flexGrow).toBe(1)
+
+    setHeight(5)
+    const resized = (FileViewer as any)(props)
+
+    expect(resized.props.height).toBe(5)
+    const resizedBox = elements(resized?.props?.children).find(
+      (child: any) => child.type === "scrollbox",
+    )
+    expect(resizedBox?.props.flexGrow).toBe(1)
+  })
 })
 
 /*

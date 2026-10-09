@@ -419,8 +419,33 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * thin, so the only way the body's variable is undefined is its other arm.
    */
   if (markdown) {
+    /*
+     * The row budget, on a path that otherwise reads it for nothing.
+     *
+     * `props.height` is the measured, resize-reactive count `tui.tsx` computes
+     * and already subtracts `VIEWER_ROWS_CHROME` from, and the repaint effect
+     * above reads it -- but on this branch nothing consumed it, so the panel's
+     * extent rested entirely on `flexGrow={1}` stretching the claim's element
+     * out to the panel area. Whether the host does that has never been observed
+     * in this repo; the plugin only ever saw the renderer's height signal.
+     *
+     * If it does not, this is the shape of the failure: the root box takes its
+     * natural height, the scrollbox inside it never gets a bounded viewport,
+     * `scrollSize - viewportSize` is 0, and the scrollbar's own setter clamps
+     * every keypress back to 0. Markdown scrolling is then inert on every file
+     * while the panel still clips to the top rows -- no error, no missing
+     * scrollbar, just a preview that will not move. The text path is immune
+     * because it slices `rows` to whatever it is given either way; the markdown
+     * path exists precisely because it does not slice.
+     *
+     * So the bound is stated here rather than assumed: `height` is already
+     * chrome-adjusted and already reactive, which makes `flexGrow` deterministic
+     * instead of a bet on the host. One line, and strictly narrower than the
+     * behaviour it replaces -- the box cannot now claim more rows than the
+     * panel measured, whatever the container does.
+     */
     return (
-      <box flexDirection="column">
+      <box flexDirection="column" height={props.height}>
         <text fg="dim" wrapMode="none" truncate>
           {markdownHeader(file, props.path)}
         </text>
