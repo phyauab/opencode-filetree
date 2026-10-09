@@ -47,7 +47,7 @@ const realFile = (lines: number): string => {
 }
 
 /** Captures what the plugin registers, and lets a test make calls fail. */
-function createMockContext(options: { promptFails?: boolean } = {}) {
+function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: boolean } = {}) {
   const slots: { claim: any }[] = []
   const layers: { factory: AnyFn }[] = []
   const pushed: string[] = []
@@ -57,6 +57,19 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
   const panelCalls: { action: "open" | "close"; name?: string }[] = []
   /** What the host would report as this plugin's open panel. */
   let openPanel: { name: string; sessionID: string } | undefined
+
+  /**
+   * Calls the `session.panel` claim the way the host does, mid-close.
+   *
+   * Declared here and invoked from the mock's `close()` further down: a function
+   * declaration is hoisted, and `slots` is initialised before any test can get
+   * as far as closing a panel.
+   */
+  function rerenderClaim(name: string) {
+    slots
+      .find((s) => s.claim.append === "session.panel")
+      ?.claim.render({ name, sessionID: "ses_1" })
+  }
 
   /**
    * The renderer's stand-in, built before `context` because its emitter methods
@@ -118,6 +131,12 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
         close: () => {
           panelCalls.push({ action: "close" })
           openPanel = undefined
+          // The host re-renders the claim as a side effect of closing, and while
+          // the panel is between states that render carries whatever name it
+          // settles on -- not necessarily ours. Nothing invoked this before, so a
+          // re-entrant reconcile during a close could not fire and the plugin
+          // could close twice with no test noticing.
+          if (options.reRendersOnClose) rerenderClaim("someone-elses-panel")
         },
         current: () => openPanel,
       },
@@ -405,6 +424,48 @@ describe("plugin entry (sidebar spike)", () => {
     // And the host is told, so the panel really is closed rather than merely
     // forgotten about.
     expect(m.panelCalls[m.panelCalls.length - 1]).toEqual({ action: "close" })
+  })
+
+  itRender("closes the panel exactly once per open, even if the close re-renders", async () => {
+    const { default: mod } = await load()
+    // The mock's close() re-renders the claim with a foreign panel name, the way
+    // a host mid-close would. That render hits the reconcile, which used to find
+    // `viewerOpen` still true during `openViewer`'s own close and call
+    // `closeViewer` -- a second close for one `enter`.
+    const m = createMockContext({ reRendersOnClose: true })
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+
+    expect(m.panelCalls).toEqual([
+      { action: "close" },
+      { action: "open", name: "filetree.viewer" },
+    ])
+    // The viewer still ends up open, because the flag is set from what the host
+    // agreed to rather than left as the reconcile found it.
+    expect(m.viewerEnabled()).toBe(true)
+    expect(m.renderViewer("filetree.viewer")).not.toBeNull()
+  })
+
+  itRender("a second enter closes once each time, not twice", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext({ reRendersOnClose: true })
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    // The worst case for a double close: the panel is already ours when the
+    // second `enter` closes it, so the flag is true for the whole of that close.
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    state.setCursor(2)
+    m.command("filetree.open")!.run()
+
+    expect(m.panelCalls.filter((p) => p.action === "close")).toHaveLength(2)
+    expect(m.panelCalls.filter((p) => p.action === "open")).toHaveLength(2)
+    expect(m.viewerEnabled()).toBe(true)
+    expect(m.renderViewer("filetree.viewer").props.path).toBe("/proj/f2")
   })
 
   itRender("keeps the viewer keys when its own panel re-renders", async () => {
@@ -763,6 +824,26 @@ describe("plugin entry (sidebar spike)", () => {
     m.command("filetree.viewer.close")!.run()
 
     expect(m.panelCalls[m.panelCalls.length - 1]).toEqual({ action: "close" })
+    expect(m.viewerEnabled()).toBe(false)
+  })
+
+  itRender("esc closes the panel once, even if the close re-renders", async () => {
+    const { default: mod } = await load()
+    // The same hazard as `openViewer`, from the other direction: if `closeViewer`
+    // cleared its flag *after* calling close, the re-render that close triggers
+    // would find the flag still true and reconcile into a second close. Pressing
+    // esc must not be a way to stack closes.
+    const m = createMockContext({ reRendersOnClose: true })
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    const closesBefore = m.panelCalls.filter((p) => p.action === "close").length
+
+    m.command("filetree.viewer.close")!.run()
+
+    expect(m.panelCalls.filter((p) => p.action === "close")).toHaveLength(closesBefore + 1)
     expect(m.viewerEnabled()).toBe(false)
   })
 

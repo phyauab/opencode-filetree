@@ -173,9 +173,20 @@ export default Plugin.define({
      * than a per-keypress one, and a disagreement between the two reads is
      * harmless -- the viewer's own `offset()` clamps every read of the offset,
      * so the window is never outside the file either way.
+     *
+     * The gate is cleared BEFORE the close, not after it, and that ordering is
+     * load-bearing. `close()` can make the host re-render the claim, carrying a
+     * panel name that is not ours while the panel is between states -- and a
+     * re-render at that moment hits the reconcile in the claim below, which sees
+     * a still-true flag and calls `closeViewer`, which closes a second time. On a
+     * second `enter` that is a close per keypress for a panel we are in the
+     * middle of opening. Clearing first makes the flag mean "the viewer owns the
+     * keys" with no window in which that is untrue, which is the same reason
+     * `closeViewer` clears before its own close.
      */
     const openViewer = (entry: DirEntry) => {
       const file = readForView(entry.path)
+      setViewerOpen(false)
       setViewerScroll = undefined
       setViewerPath(entry.path)
       setViewerLines(file.kind === "text" ? file.totalLines : 0)
@@ -184,6 +195,13 @@ export default Plugin.define({
       trace("viewer.open", { path: entry.path, lines: viewerLines(), kind: file.kind })
     }
 
+    /**
+     * Releases the panel and the keys together.
+     *
+     * The flag goes before the close for the same reason `openViewer` clears it
+     * first: a close that re-renders the claim must not find the flag still true
+     * and reconcile its way into a second close.
+     */
     const closeViewer = () => {
       setViewerScroll = undefined
       setViewerOpen(false)

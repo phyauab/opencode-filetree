@@ -250,10 +250,20 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    *
    * The rows are a plain `.map()` inside the root's children rather than a
    * `<For>`, and the kind switch is a ternary rather than a `<Show>`. The test
-   * reason is first and sufficient: `scripts/test-stubs.ts` stubs both as
-   * `() => null`, and a capitalised JSX tag compiles to `createComponent(Show,
-   * props)`, which the stub records without ever calling it -- so rows built
-   * inside one are absent from `props.children` and no test can find them.
+   * reason is weaker than it was once said to be, and is worth stating
+   * accurately rather than repeating: a capitalised JSX tag compiles to
+   * `createComponent(Show, props)`, which the stub runtime records *without
+   * invoking* -- so a component inside a `<Show>` is never run by a test. Its
+   * children are still reachable, because the stub does not invoke the props
+   * getters either and the compiled `get children()` survives (`scripts/
+   * test-stubs.ts` implements `Show` honestly for exactly that reason), but
+   * anything computed inside a component body is not. A ternary and a `.map()`
+   * need no such walk: the rows are directly in `props.children`.
+   *
+   * An earlier version of this comment claimed the stub defined both as
+   * `() => null` and that "no test can find them" inside one. The first half is
+   * no longer true of `Show`, and the second was never true. The reasoning above
+   * is the part that survives.
    *
    * The reactivity is a different question from the choice of element, and it is
    * worth being precise because `FileTree` looks like the counter-example. Its

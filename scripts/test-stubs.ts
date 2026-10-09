@@ -114,6 +114,13 @@ mock.module("solid-js", () => ({
    * So the component is implemented rather than stubbed out, and both child
    * shapes are handled: a plain child is returned as-is, and a function child is
    * called with the `when` value, which is what `keyed` means.
+   *
+   * No test exercises this yet -- nothing invokes the component, because
+   * `createComponent` records rather than calls, and no test in the suite needs
+   * to. It was verified by a throwaway `.tsx` probe when it was written (all
+   * three shapes above, against real compiled JSX) and the probe was deleted.
+   * It is here so the next test that reaches inside a `<Show>` can rely on it
+   * rather than rediscover that the stub used to return `null`.
    */
   Show: (props: {
     when?: unknown

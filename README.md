@@ -117,10 +117,10 @@ JavaScript that the plugin may carry, while those two must be the host's.
 
 ## Panel width
 
-The tree shares the host's session panel with the file viewer -- whichever is
-open, it opens in the host's right pane, which defaults to half the session
-width. The host owns that width ??no plugin API can set it ??but it is easy to
-change by hand:
+The tree lives in the session sidebar, and the file viewer claims the session
+panel -- a different surface, opened on `enter`. The panel opens in the host's
+right pane, which defaults to half the session width. The host owns that width
+??no plugin API can set it ??but it is easy to change by hand:
 
 - **Drag the panel's left edge** left or right. There is a resize handle on the
   border as soon as the panel is open.
@@ -132,6 +132,13 @@ Dragging it left to roughly 42 columns matches the session-list sidebar on the
 left and leaves the conversation most of the screen.
 
 ## Why a panel and not the sidebar
+
+> **Historical.** This section describes the sidebar as a dead end, which is
+> what the diagnostics showed at the time. The `sidebar-placement` spike then
+> put the tree back on `sidebar.content` on purpose, so the section no longer
+> describes the tree's placement -- only the file viewer, which genuinely is
+> on `session.panel`. Kept because the traces it records are still the reason
+> the keymap claims its own keys rather than reading focus.
 
 This plugin originally rendered into the `sidebar.content` slot and registered
 its own keymap layer. That does not work, and the reason is worth recording.
@@ -241,7 +248,7 @@ to the session gets an error toast rather than taking the TUI down.
 ## Development
 
 ```
-bun test          # 372 tests, 4 of which fail on a checkout with node_modules
+bun test          # 375 tests, 4 of which fail on a checkout with node_modules
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```
