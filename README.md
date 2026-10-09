@@ -117,7 +117,8 @@ JavaScript that the plugin may carry, while those two must be the host's.
 
 ## Panel width
 
-The panel opens in the host's right pane, which defaults to half the session
+The tree shares the host's session panel with the file viewer -- whichever is
+open, it opens in the host's right pane, which defaults to half the session
 width. The host owns that width ??no plugin API can set it ??but it is easy to
 change by hand:
 
@@ -240,7 +241,7 @@ to the session gets an error toast rather than taking the TUI down.
 ## Development
 
 ```
-bun test          # 366 tests
+bun test          # 372 tests, 4 of which fail on a checkout with node_modules
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```

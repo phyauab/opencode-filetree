@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { PanelInput } from "@opencode/plugin/tui/context"
-import { createSignal } from "solid-js"
+import { createSignal, type Setter } from "solid-js"
 import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
 import { createTreeCommands, promptSession } from "./commands"
@@ -83,29 +83,24 @@ export default Plugin.define({
      * cheaper of the two options.
      */
     const [viewerLines, setViewerLines] = createSignal(0)
-    /*
-     * The viewer's scroll writer, held as the one-layer-nested type the prop
-     * declares: a function that takes an updater and applies it.
-     *
-     * The nested type is the one the prop declares: a function that takes an
-     * updater and applies it. `FileViewer` hands over `setScroll`, Solid's own
-     * setter, so calling it with an updater below is the same call Solid would
-     * make itself. The declared type and the value handed over are one function
-     * layer apart -- the type describes what the writer does, the value IS the
-     * writer -- so the single cast at the handoff is where that difference is
-     * absorbed, and nowhere else.
-     *
-     * Nothing re-clamps here. `scrollByLine`/`scrollByPage` bound the step
-     * against the line count and row count, and the viewer's own `offset()`
-     * clamps every read of the offset, so no value written from here can put
-     * the window outside the file.
-     */
     /**
      * The viewer's scroll offset's WRITER, not its value, because the offset
      * belongs to the component that owns the repaint. Whoever drives it says how
      * far to move; the viewer's own `offset()` decides what is legal.
+     *
+     * Solid's `Setter<number>` because that is literally what `FileViewer` hands
+     * over -- the signal's own writer -- and it is the type that takes an
+     * updater, so `scrollViewer` below can write it with no cast and nothing to
+     * explain away. The prop used to declare the writer's *behaviour* rather
+     * than its type, and that mismatch is what forced a cast that hid no real
+     * error.
+     *
+     * Nothing re-clamps on the way in. `scrollByLine`/`scrollByPage` bound the
+     * step against the line count and row count, and the viewer's `offset()`
+     * clamps every read of the offset, so no value written from here can put
+     * the window outside the file.
      */
-    let setViewerScroll: ((fn: (prev: number) => number) => void) | undefined
+    let setViewerScroll: Setter<number> | undefined
 
     /**
      * Rows the viewer may spend on file content.
@@ -196,9 +191,15 @@ export default Plugin.define({
       trace("viewer.close")
     }
 
-    /** Moves the window, in lines or in half-screens. */
-    const scrollViewer = (step: (prev: number) => number) => {
-      const rows = viewerHeight()
+    /**
+     * Moves the window, in lines or in half-screens.
+     *
+     * The row count is passed to the step rather than read again inside it, so
+     * the value the step clamps against is the value the trace reports. Read
+     * twice it would be two separate measurements of a number that can change
+     * between them on a resize.
+     */
+    const scrollViewer = (rows: number, step: (prev: number) => number) => {
       setViewerScroll?.((prev) => step(prev))
       trace("viewer.scroll", { rows, lines: viewerLines(), open: viewerOpen() })
     }
@@ -284,22 +285,39 @@ export default Plugin.define({
     /*
      * The viewer's claim on `session.panel`.
      *
-     * A plain `if` rather than a `<Show>`, for the reason the viewer itself
-     * settled: `scripts/test-stubs.ts` defines `Show` as `() => null` and the
-     * stub records `createComponent(Show, props)` without ever calling it, so
-     * anything inside a `<Show>` is unreachable from a test. A ternary returning
-     * null renders nothing for every other plugin's panel and keeps the viewer's
-     * own element inspectable, which is what pins the path a second `enter`
-     * hands over.
+     * A plain `if` rather than a `<Show>`, and the reason is the host rather
+     * than the tests. Both render nothing when the condition fails, but a claim
+     * that returns `null` is unambiguous about owning nothing, and the
+     * reconciling side effect below needs to happen on the way out -- a `<Show>`
+     * would put the viewer's element behind a component boundary whose child is
+     * only reachable by walking `props.children`. (That walk does work: the stub
+     * records `createComponent(Show, props)` without invoking the props getters,
+     * so the compiled `get children()` survives. An earlier version of this
+     * comment claimed the opposite and was wrong; the stub's `Show` has since
+     * been made honest, which is the durable fix rather than routing around an
+     * artefact of it.)
      *
-     * `path` and `height` are read as signals through the JSX getter, so this
-     * render is as reactive as the build allows: a resize changes what is
-     * visible without anything having to close and reopen the panel.
+     * `path` and `height` are NOT equivalent, and the difference is the whole
+     * reason `openViewer` closes the panel before reopening it. babel-preset-solid
+     * wraps `height={viewerHeight()}` in a getter, because it is a call, so a
+     * resize reaches the viewer in place. `path` is a local read once, so it
+     * compiles to a plain `path: path` -- a snapshot taken when this render ran.
+     * Reopening the same panel with a different path would therefore hand the
+     * new path to a component already on screen, whose body already read the old
+     * one. Closing the panel is what forces a fresh mount.
      */
     const unregisterViewer = context.ui.slot({
       append: "session.panel",
       render: (input: PanelInput) => {
-        if (input.name !== VIEWER_PANEL) return null
+        // The SDK documents this render as receiving its input reactively, so this
+        // guard re-evaluates when the host moves the panel off us -- its own close
+        // chrome, or another plugin taking `session.panel` for itself. Reconciling
+        // here is what stops a priority-20 layer from eating the arrow keys over a
+        // panel that is not ours, with nothing on screen to explain the dead keys.
+        if (input.name !== VIEWER_PANEL) {
+          if (viewerOpen()) closeViewer()
+          return null
+        }
         const path = viewerPath()
         if (!path) return null
         return (
@@ -311,11 +329,8 @@ export default Plugin.define({
             // without owning it. Reset on every open so a keypress can never
             // reach the writer of a viewer that has been torn down.
             //
-            // The declared parameter type and the value `FileViewer` actually hands over
-            // are one function layer apart -- see the note on `setViewerScroll`
-            // -- so this is the one place that difference is cast away.
-            scrollTo={(setOffset) => {
-              setViewerScroll = setOffset as unknown as (fn: (prev: number) => number) => void
+            scrollTo={(setOffset: Setter<number>) => {
+              setViewerScroll = setOffset
             }}
           />
         )
@@ -468,11 +483,12 @@ export default Plugin.define({
      * The viewer's keys, and the layer ordering that makes them work.
      *
      * The priority is higher than the tree's nav layer, and strictly greater
-     * than it rather than equal, because both layers bind up/down and tie-break
-     * on registration order -- which is invisible at the call site. A future
-     * edit that moved this registration above the nav layer would quietly hand
-     * the arrows back to the tree, with nothing in the code saying so. The
-     * suite asserts the ordering rather than trusting this comment.
+     * than it rather than equal, because both layers bind up/down and equal
+     * priorities tie-break on registration order -- which is invisible at the
+     * call site. With a strict margin registration order stops mattering, so
+     * moving this layer above the nav layer cannot change the outcome. Lowering
+     * it *to* 10 would, and the suite asserts the ordering rather than trusting
+     * this comment.
      *
      * Against the *host's* layer the same argument applies one level down: it is
      * gated on `currentFocusedEditor === null`, which is true for anything
@@ -490,25 +506,37 @@ export default Plugin.define({
               id: "filetree.viewer.down",
               title: "File viewer: scroll down",
               bind: "down",
-              run: () => scrollViewer((prev) => scrollByLine(prev, 1, viewerLines(), viewerHeight())),
+              run: () => {
+                const rows = viewerHeight()
+                scrollViewer(rows, (prev) => scrollByLine(prev, 1, viewerLines(), rows))
+              },
             },
             {
               id: "filetree.viewer.up",
               title: "File viewer: scroll up",
               bind: "up",
-              run: () => scrollViewer((prev) => scrollByLine(prev, -1, viewerLines(), viewerHeight())),
+              run: () => {
+                const rows = viewerHeight()
+                scrollViewer(rows, (prev) => scrollByLine(prev, -1, viewerLines(), rows))
+              },
             },
             {
               id: "filetree.viewer.page.down",
               title: "File viewer: scroll down a page",
               bind: "pagedown",
-              run: () => scrollViewer((prev) => scrollByPage(prev, 1, viewerLines(), viewerHeight())),
+              run: () => {
+                const rows = viewerHeight()
+                scrollViewer(rows, (prev) => scrollByPage(prev, 1, viewerLines(), rows))
+              },
             },
             {
               id: "filetree.viewer.page.up",
               title: "File viewer: scroll up a page",
               bind: "pageup",
-              run: () => scrollViewer((prev) => scrollByPage(prev, -1, viewerLines(), viewerHeight())),
+              run: () => {
+                const rows = viewerHeight()
+                scrollViewer(rows, (prev) => scrollByPage(prev, -1, viewerLines(), rows))
+              },
             },
             {
               id: "filetree.viewer.close",

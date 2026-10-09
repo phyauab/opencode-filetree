@@ -1,4 +1,4 @@
-import { createEffect, createSignal, type Component } from "solid-js"
+import { createEffect, createSignal, type Component, type Setter } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
 import { basename } from "node:path"
 import { highlightLines, languageFor, type HighlightedLine } from "./highlight"
@@ -36,8 +36,16 @@ export type FileViewerProps = {
    * the offset lives inside because it is display state that only the viewer
    * can repaint against. Hoisting it into plugin state would leave a bare
    * signal, and a bare signal paints nothing until something asks for a frame.
+   *
+   * Typed as Solid's own `Setter<number>` because that is literally what is
+   * handed over: the signal's writer. A narrower declared type would describe
+   * what the writer *does* rather than what it *is*, and every caller would
+   * then need a cast to bridge the difference -- a cast that says nothing the
+   * checker did not already know, and that hides the one thing worth pinning.
+   * `Setter<number>` takes an updater, so the caller writes
+   * `setScroll((prev) => next)` and the type says exactly that.
    */
-  scrollTo?: (fn: (prev: number) => number) => void
+  scrollTo?: (setOffset: Setter<number>) => void
 }
 
 /**

@@ -99,7 +99,32 @@ mock.module("solid-js", () => ({
   indexArray: <T,>(list: T[]) => list.map((item, i) => [i, item] as const),
   mapArray: <T,>(list: T[], fn: (item: T, i: number) => T) => list.map(fn),
   For: () => null,
-  Show: () => null,
+  /**
+   * `<Show>`, honestly rather than as a hole.
+   *
+   * It used to be `() => null`, on the reasoning that the stub records
+   * `createComponent(Show, props)` without ever calling the component, so nothing
+   * inside a `<Show>` was reachable from a test. That reasoning was half right
+   * and it was used to justify keeping JSX out of `tui.tsx`. What actually
+   * happens is narrower: `createComponent` records the props object *uninvoked*,
+   * but it does not invoke the props getters either, so the compiled
+   * `get children()` survives intact and a test can walk it -- exactly as
+   * `FileViewer.test.ts` walks `props.children` for its rows.
+   *
+   * So the component is implemented rather than stubbed out, and both child
+   * shapes are handled: a plain child is returned as-is, and a function child is
+   * called with the `when` value, which is what `keyed` means.
+   */
+  Show: (props: {
+    when?: unknown
+    keyed?: boolean
+    fallback?: unknown
+    children?: unknown
+  }) => {
+    const child = props.when ? props.children : props.fallback
+    if (typeof child === "function") return (child as (value: unknown) => unknown)(props.when)
+    return (child as unknown) ?? null
+  },
   ErrorBoundary: (props: { children?: unknown }) => props.children ?? null,
   // JSX compiles to createComponent/mergeProps. The elements are never rendered
   // in these tests; they only need to exist.

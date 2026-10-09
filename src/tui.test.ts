@@ -58,6 +58,31 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
   /** What the host would report as this plugin's open panel. */
   let openPanel: { name: string; sessionID: string } | undefined
 
+  /**
+   * The renderer's stand-in, built before `context` because its emitter methods
+   * have to reach back into the context object they hang off.
+   */
+  const listeners: Record<string, AnyFn[]> = {}
+  const renderer = {
+    currentFocusedRenderable: null as any,
+    height: 40,
+    requestRender: () => {},
+    on(event: string, fn: AnyFn) {
+      ;(listeners[event] ??= []).push(fn)
+    },
+    off(event: string, fn: AnyFn) {
+      listeners[event] = (listeners[event] ?? []).filter((registered) => registered !== fn)
+    },
+    /** Fires an event the way the host's emitter would. */
+    emit(event: string) {
+      for (const fn of [...(listeners[event] ?? [])]) fn()
+    },
+    /** How many handlers are subscribed to an event. */
+    listenerCount(event: string) {
+      return (listeners[event] ?? []).length
+    },
+  }
+
   const context: any = {
     options: {},
     location: { directory: process.cwd() },
@@ -111,9 +136,17 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
     data: { on: () => () => {}, listen: () => {} },
     theme: {},
-    // The tree's repaint effect asks for a frame on mount, so a full renderer stand-in
-  // is needed once the component actually runs rather than just being described.
-  renderer: { currentFocusedRenderable: null, height: 40, requestRender: () => {} },
+    /**
+     * The tree's repaint effect asks for a frame on mount, so a full renderer
+     * stand-in is needed once the component actually runs rather than just being
+     * described.
+     *
+     * `on`/`off` are a real emitter pair rather than absent, because the plugin
+     * subscribes to `resize` to keep the viewer's row count honest. With them
+     * missing, both the subscription and its teardown were untested and a typo in
+     * the event name would have passed -- the code simply never ran.
+     */
+    renderer,
   }
 
   const allCommands = () =>
@@ -123,18 +156,21 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     })
 
   /**
-   * The layer that binds the viewer's scrolling keys, found by its command id.
+   * The layer that binds a given command id, found by that id.
    *
-   * Located by what it binds rather than by its index, because the ordering that
-   * decides the winner between two layers binding up/down is exactly the thing
-   * no test can read off a registration index.
+   * Both the nav layer and the viewer layer were being read off `layers[n]`,
+   * which is correct only while registration order happens to put them there.
+   * The ordering test compares the two layers' priorities, so an index that
+   * silently pointed at the wrong layer would make that test assert something
+   * other than what it claims -- and the deciding property between two layers
+   * binding the same keys is exactly the thing no test should read off an index.
    */
-  const viewerLayer = () => {
-    const found = layers.find((l) =>
-      (l.factory().commands ?? []).some((c: any) => c.id === "filetree.viewer.down"),
-    )
+  const layerWith = (id: string) => {
+    const found = layers.find((l) => (l.factory().commands ?? []).some((c: any) => c.id === id))
     return found?.factory()
   }
+
+  const viewerLayer = () => layerWith("filetree.viewer.down")
 
   return {
     context,
@@ -191,17 +227,17 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     },
     command: (id: string) => allCommands().find((c: any) => c.id === id),
     /** The navigation layer, the one whose `enabled` decides who owns the keys. */
-    navLayer: () => layers[1].factory(),
+    navLayer: () => layerWith("filetree.down"),
     /** Is the navigation layer live right now? */
     navEnabled: () => {
-      const nav = layers[1].factory()
-      return typeof nav.enabled === "function" ? nav.enabled() : nav.enabled
+      const nav = layerWith("filetree.down")
+      return typeof nav?.enabled === "function" ? nav.enabled() : nav?.enabled
     },
     /**
-     * The `session.panel` claim, which the sidebar claim is registered before,
-     * so it is the second one. Found by its target path rather than by index,
-     * because "the second claim" is a fact about registration order that a
-     * future edit could break without any test noticing.
+     * The `session.panel` claim. The sidebar claim is registered first, so this
+     * is the second one, but it is found by its target path rather than by index
+     * -- "the second claim" is a fact about registration order that a future edit
+     * could break without any test noticing.
      */
     viewerClaim: () => slots.find((s) => s.claim.append === "session.panel")?.claim,
     /** Renders the panel claim as the host would, with a named panel selected. */
@@ -289,6 +325,47 @@ describe("plugin entry (sidebar spike)", () => {
     expect(slots.map((s) => s.claim.append)).toEqual(["sidebar.content", "session.panel"])
   })
 
+  itRender("a resize changes how many rows the viewer thinks it has", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(200), isDirectory: false }])
+    m.command("filetree.open")!.run()
+
+    // The panel hands the viewer a row count, and the only measurement available
+    // is the renderer's height -- re-read on `resize`, or a terminal the user
+    // drags taller would keep scrolling by the old half-page for the session.
+    const element = m.renderViewer("filetree.viewer")
+    // 40 rows less the viewer's two chrome rows.
+    expect(element.props.height).toBe(38)
+
+    m.context.renderer.height = 100
+    m.context.renderer.emit("resize")
+
+    expect(m.renderViewer("filetree.viewer").props.height).toBe(98)
+    // And the page step follows it, rather than staying on the old height.
+    const viewer = m.viewerOffsets()
+    m.command("filetree.viewer.page.down")!.run()
+    expect(viewer.written).toEqual([49])
+  })
+
+  itRender("unsubscribes from resize when the plugin deactivates", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    const cleanup = await mod.setup(m.context)
+
+    // The teardown has to be the matching `off`, because an EventEmitter's `on`
+    // returns the emitter rather than an unsubscribe. A plugin reloaded in a live
+    // TUI would otherwise stack another listener per generation and re-measure
+    // the same terminal once per stale plugin.
+    expect(m.context.renderer.listenerCount("resize")).toBe(1)
+
+    await cleanup?.()
+
+    expect(m.context.renderer.listenerCount("resize")).toBe(0)
+  })
+
   itRender("renders the viewer only for its own panel name", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
@@ -305,6 +382,68 @@ describe("plugin entry (sidebar spike)", () => {
     const element = m.renderViewer("filetree.viewer")
     expect(element).not.toBeNull()
     expect(element.props.path).toBe("/proj/f1")
+  })
+
+  itRender("releases the viewer keys when the host moves the panel off us", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    expect(m.viewerEnabled()).toBe(true)
+
+    // Either the host's own close chrome or another plugin taking
+    // `session.panel`. Neither goes through our `escape`, and before the claim
+    // reconciled itself a priority-20 layer kept swallowing up/down over a
+    // panel that was no longer ours -- dead keys with nothing on screen to
+    // explain them, which is the exact failure this repo has paid for twice.
+    expect(m.renderViewer("someone-elses-panel")).toBeNull()
+
+    expect(m.viewerEnabled()).toBe(false)
+    // And the host is told, so the panel really is closed rather than merely
+    // forgotten about.
+    expect(m.panelCalls[m.panelCalls.length - 1]).toEqual({ action: "close" })
+  })
+
+  itRender("keeps the viewer keys when its own panel re-renders", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    const closesBefore = m.panelCalls.filter((p) => p.action === "close").length
+
+    // The host re-renders a claim it already owns -- on a resize, say. That must
+    // not read as "the panel went away", or the arrows would die under a
+    // perfectly visible file.
+    m.renderViewer("filetree.viewer")
+
+    expect(m.viewerEnabled()).toBe(true)
+    expect(m.panelCalls.filter((p) => p.action === "close")).toHaveLength(closesBefore)
+  })
+
+  itRender("does not re-close the panel on every render after losing it", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    m.renderViewer("someone-elses-panel")
+    const closesAfterReconcile = m.panelCalls.filter((p) => p.action === "close").length
+
+    // Reconciling calls `closeViewer`, which calls `panel.close()`. If the guard
+    // were not there, the host re-rendering the claim with a foreign name would
+    // send another close on every frame, for a panel it already let go of.
+    for (let i = 0; i < 5; i++) m.renderViewer("someone-elses-panel")
+
+    expect(m.panelCalls.filter((p) => p.action === "close")).toHaveLength(closesAfterReconcile)
+    expect(m.viewerEnabled()).toBe(false)
   })
 
   itRender("renders the tree for the sidebar's session", async () => {
@@ -543,24 +682,19 @@ describe("plugin entry (sidebar spike)", () => {
     expect(root.focused).toBe(false)
   })
 
-  itRender("enter on a file opens the viewer panel and spawns nothing", async () => {
+  itRender("enter on a file opens the viewer panel and nothing else", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
-    // f1 is a file. Nothing leaves the process: there is no `$EDITOR` to read,
-    // no child process to spawn, and no promise for the keypress to await.
+    // f1 is a file. The whole interaction is the panel claim: no child process,
+    // no `$EDITOR` lookup, and no promise for the keypress to await. The
+    // `$EDITOR` environment this test used to set and restore belonged to the
+    // spawn path that was deleted, and setting it asserted nothing.
     state.setCursor(1)
-    const editor = process.env.EDITOR
-    process.env.EDITOR = process.platform === "win32" ? "cmd" : "/usr/bin/true"
-    try {
-      m.command("filetree.open")!.run()
-      await wait(50)
-    } finally {
-      if (editor === undefined) delete process.env.EDITOR
-      else process.env.EDITOR = editor
-    }
+    m.command("filetree.open")!.run()
+    await wait(50)
 
     expect(m.panelCalls).toEqual([
       { action: "close" },
@@ -717,6 +851,28 @@ describe("plugin entry (sidebar spike)", () => {
     expect([...state.expanded()]).toEqual([])
     expect(m.prompts).toEqual([])
     expect(m.panelCalls.filter((p) => p.action === "open")).toHaveLength(1)
+  })
+
+  itRender("down past the last line stays on the last line", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(3), isDirectory: false }])
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+    m.command("filetree.viewer.down")!.run()
+    m.command("filetree.viewer.down")!.run()
+
+    // The last mutation gap this round found closed: three lines in a 38-row
+    // panel, so there is nothing below the first line and `down` has to clamp to
+    // 0 like `pagedown` does. Every earlier `down` assertion used a file long
+    // enough to scroll, where the clamp is unreachable and `prev + 1` and
+    // `scrollByLine` are indistinguishable -- which is exactly why the mutation
+    // that swapped one for the other slipped through the original report's
+    // claim that the clamp was pinned.
+    expect(viewer.written).toEqual([0, 0])
   })
 
   itRender("up from the first line stays on the first line", async () => {
