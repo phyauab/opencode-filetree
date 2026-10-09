@@ -92,6 +92,33 @@ function messageFor(file: Exclude<ViewFile, { kind: "text" }>): string {
 }
 
 /**
+ * The header for markdown: the name, and the truncation notice when there is
+ * one. No line range.
+ *
+ * The range is dropped because it would be a number the reader cannot map to
+ * anything on screen. Markdown's rendered height is not its line count -- a
+ * paragraph wraps, a list gains markers, blocks are separated by blank rows --
+ * so `1-5 of 3` is both possible and meaningless, and a scroll position the
+ * scrollbox owns is not a line of the file. The pruning notice survives,
+ * because "first 2000 lines" is a fact about what was read and holds whatever
+ * the renderer then does with it.
+ *
+ * Takes the file already narrowed to `kind: "text"` rather than re-checking the
+ * kind itself, and the narrowing is the caller's job rather than a guard here:
+ * the only call sits inside `if (markdown)`, and `markdown` already requires
+ * `file.kind === "text"`, so a runtime check would be unreachable. It is a
+ * parameter rather than a closure over `file` because TypeScript does not carry
+ * an alias's narrowing into a nested function -- writing the guard would
+ * compile and writing nothing would not, which is what makes the signature the
+ * honest place to put it. The text header still checks the kind itself because
+ * it also runs for the error and binary kinds.
+ */
+function markdownHeader(file: Extract<ViewFile, { kind: "text" }>, path: string): string {
+  const name = basename(path)
+  return file.truncated ? `${name} — first ${file.totalLines} lines` : name
+}
+
+/**
  * `Context["theme"]` is typed as an unresolved import -- `@opencode/plugin/tui/context`
  * borrows it from `@opentui/core`, which is a runtime package this plugin must
  * not ship a copy of -- so the one cast that bridges it lives here rather than at
@@ -222,24 +249,8 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   }
 
   /**
-   * The header for markdown: the name, and the truncation notice when there is
-   * one. No line range.
-   *
-   * The range is dropped because it would be a number the reader cannot map to
-   * anything on screen. Markdown's rendered height is not its line count -- a
-   * paragraph wraps, a list gains markers, blocks are separated by blank rows --
-   * so `1-5 of 3` is both possible and meaningless, and a scroll position the
-   * scrollbox owns is not a line of the file. The pruning notice survives,
-   * because "first 2000 lines" is a fact about what was read and holds whatever
-   * the renderer then does with it.
+   * The gutter's width, so the numbers do not shuffle as the window moves.
    */
-  const markdownHeader = () => {
-    const name = basename(props.path)
-    if (file.kind !== "text") return name
-    return file.truncated ? `${name} — first ${file.totalLines} lines` : name
-  }
-
-  /** The gutter's width, so the numbers do not shuffle as the window moves. */
   const gutterWidth = String(lines.length).length
 
   /*
@@ -351,7 +362,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     return (
       <box flexDirection="column">
         <text fg="dim" wrapMode="none" truncate>
-          {markdownHeader()}
+          {markdownHeader(file, props.path)}
         </text>
         <scrollbox flexGrow={1} ref={captureMarkdownBox}>
           <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />

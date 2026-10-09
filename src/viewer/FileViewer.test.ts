@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSignal } from "solid-js"
 import { FileViewer, VIEWER_ROWS_CHROME } from "./FileViewer"
+import { MAX_VIEW_LINES } from "./readForView"
 
 const created: string[] = []
 
@@ -384,8 +385,15 @@ describe("VIEWER_ROWS_CHROME", () => {
   })
 })
 
-/** A theme carrying only the markdown heading token, which is enough to mark a
- *  file as markdown and no more. */
+/**
+ * A theme with one real markdown token in it, so `buildSyntaxStyle` builds one
+ * real scope row instead of falling back to the empty style.
+ *
+ * It exists to make the theme -> context -> style wiring observable, which is
+ * otherwise invisible: the element renders either way. It says nothing about
+ * which files count as markdown -- the extension decides that alone, through
+ * `isMarkdown` -- so a thinner theme must never be read as "not markdown".
+ */
 const mdTheme = { markdown: { heading: "#e06c75" } }
 
 /**
@@ -415,6 +423,25 @@ describe("a markdown file", () => {
     const md = markdownOf(element)
     expect(md.props.content).toBe("# Title\n\nsome text")
     expect(md.props.conceal).toBe(true)
+
+    /*
+     * The whole theme -> context -> style wiring, asserted in the one place it
+     * can be seen.
+     *
+     * It has to be asserted here because every other property of this path is
+     * satisfied without it: if `mount` put `theme` on the component's props
+     * instead of its context, `themeOf` would read `undefined` for every test,
+     * `buildSyntaxStyle(undefined)` would hand back the host's empty style, the
+     * `<markdown>` element would still render, and `rowsOf` would still be
+     * `[""]`. All six markdown tests and all 24 pre-existing ones would pass.
+     *
+     * The stub's two entry points return distinguishable shapes -- `fromTheme`
+     * records the scope list it was handed, `create()` returns an empty one --
+     * so the discriminator says which branch built this style, and the scope row
+     * says the token really reached the table rather than being lost on the way.
+     */
+    expect(md.props.syntaxStyle.__stub).toBe("SyntaxStyle.fromTheme")
+    expect(md.props.syntaxStyle.scopes.some((row: any) => row.scope.includes("markup.heading"))).toBe(true)
   })
 
   it("leaves code files on the Prism path", () => {
@@ -438,6 +465,11 @@ describe("a markdown file", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     const element = mount(path, 5, createMockRenderer(), { theme: {} })
     expect(markdownOf(element)).toBeTruthy()
+    // The theme reached `buildSyntaxStyle` and was found to hold nothing the
+    // table reads, so the host's own empty style came back -- the same branch a
+    // theme that never arrived at all takes. A built-from-a-theme style here
+    // would mean the empty theme had been read as a coloured one.
+    expect(markdownOf(element).props.syntaxStyle.__stub).toBe("SyntaxStyle.create")
     // The Prism rows are gone with them: the only thing after the header is the
     // scrollbox, which renders no text of its own in the stub.
     expect(rowsOf(element)).toEqual([""])
@@ -447,5 +479,19 @@ describe("a markdown file", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     const element = mount(path, 5, createMockRenderer(), {})
     expect(markdownOf(element)).toBeTruthy()
+    // Same fallback as the thin theme, by the same route: an absent theme and an
+    // empty one both land in `SyntaxStyle.create()`, and neither is a reason to
+    // show raw markdown source.
+    expect(markdownOf(element).props.syntaxStyle.__stub).toBe("SyntaxStyle.create")
+  })
+
+  it("carries the truncation notice in the markdown header", () => {
+    // A duplicated branch can drift. The text path pins its own notice, so the
+    // markdown copy needs the same assertion or a change to one would leave the
+    // other claiming something the reader can check.
+    const path = makeFile("big.md", "x\n".repeat(MAX_VIEW_LINES + 1))
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+
+    expect(headerOf(element)).toContain(`first ${MAX_VIEW_LINES} lines`)
   })
 })
