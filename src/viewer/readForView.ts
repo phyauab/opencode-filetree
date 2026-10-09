@@ -39,6 +39,22 @@ function limit(value: number | undefined, fallback: number): number {
 }
 
 /**
+ * Drops the single CR that pairs with a line terminator.
+ *
+ * This repo's working tree is CRLF -- `git ls-files --eol` reports w/crlf on
+ * FileTree.tsx, TreeNode.tsx and tui.tsx -- so most files the viewer opens here
+ * end their lines with "\r\n". Trimming here gives the CR one owner instead of
+ * N consumers each having to remember: left in the line it reaches the gutter
+ * as a stray character, and it also survives into the last highlight span of
+ * every line, where the highlighter regroups spans by splitting their text on
+ * "\n" and the CR corrupts the colour boundaries too. Only the terminator's CR
+ * goes, so a line whose content ends in a CR keeps it.
+ */
+function stripTerminatorCr(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line
+}
+
+/**
  * Reads a file for display, converting every failure into a value.
  *
  * Synchronous throughout, for the reason `readDirSync` exists: the TUI plugin
@@ -68,10 +84,12 @@ export function readForView(path: string, limits: { maxBytes?: number; maxLines?
     // A byte cap can land in the middle of a multi-byte character; the tail of
     // it decodes to U+FFFD, which is visible and honest about the cut.
     const text = bytes.toString("utf8")
-    const lines = text.split("\n")
+    const lines = text.split("\n").map(stripTerminatorCr)
     // A newline terminates a line rather than opening a new one, so the empty
-    // element a trailing "\n" produces is not a line of the file. Interior
-    // blank lines are kept: they are content.
+    // element a trailing "\n" produces is not a line of the file. The test is
+    // on the raw text, not on the trimmed lines, so "a\r\n" still loses the
+    // element the final newline produced. Interior blank lines are kept: they
+    // are content.
     if (text.endsWith("\n")) lines.pop()
 
     // Compared against what was read, not against the cap: the cap is routinely
