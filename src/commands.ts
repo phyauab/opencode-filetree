@@ -1,44 +1,5 @@
-import { spawn } from "node:child_process"
 import type { DirEntry } from "./fileSystem"
 import { moveCursor, toggleExpand, type VisibleNode } from "./treeLogic"
-
-export type EditorResult = { ok: true } | { ok: false; error: string }
-
-/**
- * Splits `$EDITOR` into a command and its arguments. Values like
- * "code --wait" or "emacsclient -nw" are common, and `spawn` does not
- * word-split on its own.
- */
-export function parseEditorCommand(value: string): { command: string; args: string[] } {
-  const parts = value.trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return { command: "code", args: [] }
-  return { command: parts[0], args: parts.slice(1) }
-}
-
-/**
- * Opens a file in the configured editor. Returns a result instead of throwing:
- * a missing editor is a normal condition, not a reason to kill the TUI.
- */
-export function spawnEditor(
-  entry: DirEntry,
-  env: Record<string, string | undefined> = process.env,
-): Promise<EditorResult> {
-  const { command, args } = parseEditorCommand(env.EDITOR || "code")
-  return new Promise((resolve) => {
-    try {
-      const child = spawn(command, [...args, entry.path], { detached: true, stdio: "ignore" })
-      // ENOENT arrives asynchronously, not as a throw, so a missing editor is
-      // only observable here.
-      child.once("error", (error) => resolve({ ok: false, error: error.message }))
-      child.once("spawn", () => {
-        child.unref()
-        resolve({ ok: true })
-      })
-    } catch (error) {
-      resolve({ ok: false, error: error instanceof Error ? error.message : String(error) })
-    }
-  })
-}
 
 /** The slice of the OpenCode client the plugin uses. */
 export type PromptClient = {
@@ -68,6 +29,20 @@ export async function promptSession(
   }
 }
 
+/*
+ * The external-editor path is gone, by request.
+ *
+ * `parseEditorCommand`, `spawnEditor` and `EditorResult` used to live here,
+ * along with the `node:child_process` import and the tests over them, and
+ * `open()` returned a promise because spawning one did. Reading a file in the
+ * terminal (`src/viewer/FileViewer.tsx`, reached through
+ * `TreeCommandsDeps.openInViewer`) replaced all of it: `enter` now shows the
+ * file in `session.panel`, which is a keypress rather than a process the TUI
+ * loses track of. Retrieve the deleted code from git history rather than
+ * re-adding it blind -- a plugin that shells out to `$EDITOR` gives away the
+ * terminal to another process and cannot tell when the user comes back.
+ */
+
 /**
  * The state and callbacks the file tree commands operate on. Kept separate from
  * the plugin entry so the keymap behaviour can be exercised without a TUI.
@@ -80,13 +55,14 @@ export type TreeCommandsDeps = {
   clampCursor: () => void
   reload: () => void
   sendToSession: (entry: DirEntry) => void
-  openInEditor: (entry: DirEntry) => Promise<EditorResult>
+  /** Shows a file in the plugin's own panel; the host owns the presentation. */
+  openInViewer: (entry: DirEntry) => void
 }
 
 export type TreeCommands = {
   move: (delta: number) => void
   toggle: () => void
-  open: () => Promise<EditorResult | undefined>
+  open: () => void
   send: () => void
   refresh: () => void
 }
@@ -102,14 +78,19 @@ export function createTreeCommands(deps: TreeCommandsDeps): TreeCommands {
     deps.clampCursor()
   }
 
-  const open = (): Promise<EditorResult | undefined> => {
+  /*
+   * A folder still folds: `enter` on a directory has to keep toggling, and a
+   * viewer that opened a folder would show the reader's own refusal to read one
+   * instead of the tree they were navigating.
+   */
+  const open = (): void => {
     const entry = deps.currentEntry()
-    if (!entry) return Promise.resolve(undefined)
+    if (!entry) return
     if (entry.isDirectory) {
       toggle()
-      return Promise.resolve(undefined)
+      return
     }
-    return deps.openInEditor(entry)
+    deps.openInViewer(entry)
   }
 
   const send = () => {

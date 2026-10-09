@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "bun:test"
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createSignal } from "solid-js"
 import { FileViewer, VIEWER_ROWS_CHROME } from "./FileViewer"
 
 const created: string[] = []
@@ -218,6 +219,43 @@ describe("FileViewer", () => {
 
     write!((prev) => prev + 2)
 
+    expect(renderer.frames()).toBeGreaterThan(before)
+  })
+
+  it("asks for a frame when the panel resizes, not only when the offset moves", () => {
+    /*
+     * The last read in the repaint effect with no test behind it.
+     *
+     * `height` is read for its dependency and never for its value, so the only
+     * way to tell whether the read is there is to change it and see whether a
+     * frame is asked for. Mounting with a plain number cannot do that: a
+     * number is not a signal, nothing subscribes to it, and the read is
+     * invisible however it is written.
+     *
+     * So the props are given a getter over a signal, which is exactly what
+     * babel-preset-solid emits for `height={viewerHeight()}` in the plugin's
+     * JSX. Remove `props.height` from the effect and the effect no longer
+     * touches the signal, so the write re-runs nothing and this fails.
+     */
+    const path = makeFile("f.txt", "one\ntwo\nthree\nfour\nfive\n")
+    const renderer = createMockRenderer()
+    const [height, setHeight] = createSignal(3)
+    const props: any = {
+      path,
+      context: makeContext(renderer, path),
+      get height() {
+        return height()
+      },
+    }
+
+    ;(FileViewer as any)(props)
+    const before = renderer.frames()
+
+    setHeight(2)
+
+    // A resize changes how many lines the window holds and where its last line
+    // ends, so leaving `height` out of the effect means the rows rebuild on a
+    // scroll and never on a resize.
     expect(renderer.frames()).toBeGreaterThan(before)
   })
 

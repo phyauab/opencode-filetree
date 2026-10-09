@@ -70,7 +70,7 @@ While the panel is open the host owns its input, so these keys go to the tree:
 |-----|--------|
 | `?�` / `?�` | Move selection |
 | `?�` / `?�` | Expand or collapse folder |
-| `enter` | Open the selected file in `$EDITOR`, or expand a folder |
+| `enter` | Open the selected file in the file viewer, or expand a folder |
 | `s` | Send the selected path to the session |
 | `r` | Refresh |
 | `esc` | Close the panel |
@@ -83,6 +83,37 @@ and the tree also re-reads itself when files change on disk.
 Rows never wrap: a name too long for the width is truncated at the row's edge,
 so the tree keeps one line per entry whatever the container's width ??a
 42-column sidebar or a half-screen panel alike.
+
+## Reading a file
+
+`enter` on a file opens it in the plugin's own panel, with the file's own
+syntax highlighting, a line-number gutter, and a header saying where you are
+in it.
+
+| Key | Action |
+|-----|--------|
+| `up` / `down` | Scroll one line |
+| `pageup` / `pagedown` | Scroll half a page |
+| `esc` | Close the viewer and hand the keys back to the tree |
+
+The file is read when you open it, capped at 512 KB and 2000 lines, and the
+header says so when either cap dropped something. A file that is not text --
+a binary, or one the plugin cannot read -- gets a sentence saying which,
+instead of a screen of rubbish.
+
+The arrow keys belong to the viewer while its panel is open. That is a layer
+priority, not a focus check: the host re-asserts focus on the prompt about a
+second after anything takes it, so a gate that read focus would flap. The
+tree claims its keys the same way, for the same reason.
+
+### It needs `bun install` before it will build
+
+The viewer tokenises each file it opens, so the plugin now depends on Prism at
+build time. A clean checkout has no `node_modules`, and `bun run build` fails
+on the missing import rather than on anything to do with your setup. Run
+`bun install` first. It still bundles no copy of `solid-js` or
+`@opentui/solid` -- see the build notes above -- because Prism is ordinary
+JavaScript that the plugin may carry, while those two must be the host's.
 
 ## Panel width
 
@@ -202,14 +233,14 @@ the panel does not re-walk the directory or re-run `git status`.
 ## When something goes wrong
 
 A directory that cannot be read ??no permission, or deleted while open ??shows
-its reason inline instead of taking down the TUI. If `$EDITOR` cannot be
-spawned, or a file cannot be sent to the session, you get an error toast rather
-than a crash.
+its reason inline instead of taking down the TUI. A file the viewer cannot read
+says why inside the panel rather than crashing, and a file that cannot be sent
+to the session gets an error toast rather than taking the TUI down.
 
 ## Development
 
 ```
-bun test          # 264 tests
+bun test          # 366 tests
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```
@@ -231,7 +262,7 @@ that touches the terminal's dimensions.
 |------|------|
 | `src/tui.tsx` | Plugin entry: panel slot and keymap layers |
 | `src/FileTree.tsx` | Tree component, pure traversal logic, windowing |
-| `src/commands.ts` | Keymap behaviour, editor spawn, session prompt |
+| `src/commands.ts` | Keymap behaviour, viewer open, session prompt |
 | `src/store.ts` | Reactive tree state, cursor clamping, viewport |
 | `src/viewport.ts` | Window calculation that keeps the cursor on screen |
 | `src/persist.ts` | Layout serialization and storage keys |
@@ -241,3 +272,7 @@ that touches the terminal's dimensions.
 | `src/fileTreeData.ts` | Hidden-entry filtering, error messages |
 | `src/icons.ts` | Icons, git status labels, hidden-directory rules |
 | `src/TreeNode.tsx` | One row of the tree |
+| `src/viewer/FileViewer.tsx` | The viewer: gutter, header, window, repaint |
+| `src/viewer/readForView.ts` | Reading a file for display, with byte and line caps |
+| `src/viewer/highlight.ts` | Prism tokenizer driven by file extension |
+| `src/viewer/scroll.ts` | Pure scroll maths for the viewer |

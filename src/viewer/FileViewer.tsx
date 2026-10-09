@@ -119,9 +119,11 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * open, which is what the reader's byte and line caps exist to bound.
    *
    * Solid never re-runs a component body, so this is the file *this mount*
-   * shows. Opening a different file therefore has to remount the viewer --
-   * Task 5 gets that for free by closing the panel, which tears the slot down --
-   * rather than by handing a new path to an instance already on screen.
+   * shows. Opening a different file therefore has to remount the viewer rather
+   * than hand a new path to an instance already on screen, which is why the
+   * plugin closes the panel before reopening it: closing is what tears the
+   * slot's content down. `openViewer` in `tui.tsx` carries that reasoning and a
+   * test that pins the path really does move.
    */
   const file = readForView(props.path)
 
@@ -181,13 +183,13 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const gutterWidth = String(lines.length).length
 
   /*
-   * Hands the keymap the signal's own writer rather than a value, so Task 5 can
-   * move the offset from outside without holding one.
+   * Hands the keymap the signal's own writer rather than a value, so the plugin
+   * can move the offset from outside without holding one.
    *
    * Nothing is clamped on the way in, and nothing has to be: every read of the
    * offset goes through `offset()` above, which clamps, so no value a caller
    * writes -- a runaway, a negative, one left over from a taller panel -- can
-   * put the window outside the file. Task 5's own `scrollByLine`/`scrollByPage`
+   * put the window outside the file. The plugin's `scrollByLine`/`scrollByPage`
    * clamp as well, so the next keypress puts a legal value back.
    */
   props.scrollTo?.(setScroll)
@@ -216,13 +218,12 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     // which is the shape of the bug this repo has already paid for twice, where
     // something changed underneath and nothing on screen moved.
     //
-    // This is the one line in the effect no test can fail today: `height` is a
-    // plain number prop and the stub's props object is not signal-backed, so
-    // nothing a test does makes this read reactive. That gap closes in Task 5,
-    // which is to source the height from a signal -- under babel-preset-solid
-    // the JSX getter then becomes real and a test can drive it. No test is
-    // written against it in the meantime, because one that cannot fail would be
-    // worse than none: it would read as coverage of a line nothing exercises.
+    // This read only counts because the caller passes a signal, not a number:
+    // the plugin's JSX is `height={viewerHeight()}`, and babel-preset-solid
+    // compiles that to a getter, so reading `props.height` here subscribes this
+    // effect to the renderer's height. A plain number would make the line inert
+    // and unreadable, which is why the test mounts the component with a getter
+    // over a signal rather than with a number.
     props.height
     context.renderer.requestRender()
   })

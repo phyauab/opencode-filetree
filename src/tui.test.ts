@@ -1,4 +1,7 @@
-import { describe, it, expect } from "bun:test"
+import { describe, it, expect, afterEach } from "bun:test"
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 type AnyFn = (...args: any[]) => any
 
@@ -11,6 +14,12 @@ const itRender = it
 /** Milliseconds of filesystem quiet before the tree re-reads. */
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+const created: string[] = []
+
+afterEach(() => {
+  while (created.length > 0) rmSync(created.pop()!, { recursive: true, force: true })
+})
+
 /**
  * Twenty entries, every fifth one a folder, so a click or a keypress lands on a
  * predictable row.
@@ -22,6 +31,21 @@ const entries = (n: number) =>
     isDirectory: i % 5 === 0,
   }))
 
+/**
+ * A real file with `lines` lines of it.
+ *
+ * The viewer reads what it is given, so scrolling can only be pinned against a
+ * file that exists: a path that does not read has no lines, every step clamps to
+ * 0, and "the key did nothing" would pass for a key that does nothing at all.
+ */
+const realFile = (lines: number): string => {
+  const dir = mkdtempSync(join(tmpdir(), "tui-viewer-"))
+  const path = join(dir, "f.ts")
+  writeFileSync(path, `${Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join("\n")}\n`)
+  created.push(dir)
+  return path
+}
+
 /** Captures what the plugin registers, and lets a test make calls fail. */
 function createMockContext(options: { promptFails?: boolean } = {}) {
   const slots: { claim: any }[] = []
@@ -29,6 +53,10 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
   const pushed: string[] = []
   const prompts: { sessionID: string; text: string }[] = []
   const toasts: { message: string; variant: string }[] = []
+  /** Every `panel.open` / `panel.close` in order, which is the whole event log. */
+  const panelCalls: { action: "open" | "close"; name?: string }[] = []
+  /** What the host would report as this plugin's open panel. */
+  let openPanel: { name: string; sessionID: string } | undefined
 
   const context: any = {
     options: {},
@@ -52,6 +80,21 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
         show: (toast: { message: string; variant: string }) => {
           toasts.push(toast)
         },
+      },
+      panel: {
+        // Returns a boolean like the real thing: a test can assert that the
+        // plugin's own gate follows what the host agreed to, rather than being
+        // set unconditionally and pretending to be open.
+        open: (name: string) => {
+          panelCalls.push({ action: "open", name })
+          openPanel = { name, sessionID: "ses_1" }
+          return true
+        },
+        close: () => {
+          panelCalls.push({ action: "close" })
+          openPanel = undefined
+        },
+        current: () => openPanel,
       },
       format: { path: (v: string) => v },
     },
@@ -79,6 +122,20 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
       return (layer.commands ?? []).map((c: any) => ({ ...c, mode: layer.mode, layer }))
     })
 
+  /**
+   * The layer that binds the viewer's scrolling keys, found by its command id.
+   *
+   * Located by what it binds rather than by its index, because the ordering that
+   * decides the winner between two layers binding up/down is exactly the thing
+   * no test can read off a registration index.
+   */
+  const viewerLayer = () => {
+    const found = layers.find((l) =>
+      (l.factory().commands ?? []).some((c: any) => c.id === "filetree.viewer.down"),
+    )
+    return found?.factory()
+  }
+
   return {
     context,
     slots,
@@ -86,6 +143,7 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
     pushed,
     prompts,
     toasts,
+    panelCalls,
     allCommands,
     /**
      * Renders the sidebar claim. The sidebar input carries the sessionID
@@ -140,6 +198,54 @@ function createMockContext(options: { promptFails?: boolean } = {}) {
       return typeof nav.enabled === "function" ? nav.enabled() : nav.enabled
     },
     /**
+     * The `session.panel` claim, which the sidebar claim is registered before,
+     * so it is the second one. Found by its target path rather than by index,
+     * because "the second claim" is a fact about registration order that a
+     * future edit could break without any test noticing.
+     */
+    viewerClaim: () => slots.find((s) => s.claim.append === "session.panel")?.claim,
+    /** Renders the panel claim as the host would, with a named panel selected. */
+    renderViewer: (name: string) => {
+      const claim = slots.find((s) => s.claim.append === "session.panel")?.claim
+      return claim?.render({ name, sessionID: "ses_1" }) as any
+    },
+    viewerLayer,
+    /**
+     * Mounts the viewer the way the host would and takes over its `scrollTo`.
+     *
+     * The plugin holds the offset's *writer*, never its value, so a test cannot
+     * read the offset back out. It can, though, see what the plugin asks that
+     * writer to become: the writer is wrapped so every updater the plugin applies
+     * is recorded and then passed through unchanged, which keeps the component's
+     * own signal in step while the test watches from the outside. The shadow
+     * value is the one the component's signal also holds, so the recorded steps
+     * are the real offsets and not a second opinion about them.
+     */
+    viewerOffsets: () => {
+      const element = slots.find((s) => s.claim.append === "session.panel")!.claim.render({
+        name: "filetree.viewer",
+        sessionID: "ses_1",
+      }) as any
+      const props = element.props
+      const forward = props.scrollTo
+      let shadow = 0
+      const written: number[] = []
+      props.scrollTo = (setScroll: (fn: (prev: number) => number) => void) => {
+        forward((fn: (prev: number) => number) => {
+          shadow = fn(shadow)
+          written.push(shadow)
+          return shadow
+        })
+      }
+      element.type(props)
+      return { written, offset: () => shadow }
+    },
+    /** Is the viewer layer live right now? */
+    viewerEnabled: () => {
+      const viewer = viewerLayer()
+      return typeof viewer?.enabled === "function" ? viewer.enabled() : viewer?.enabled
+    },
+    /**
      * Clicks a row the way the host's hit grid reports it. The click lands on the
      * tree's root box, which is the only renderable in the hit grid -- the same
      * reason the real build handles clicks there.
@@ -168,8 +274,37 @@ describe("plugin entry (sidebar spike)", () => {
 
     // The spike: the tree lives in the session sidebar, appended after the
     // host's own sidebar plugins, so it renders below the "Context" card.
-    expect(slots).toHaveLength(1)
     expect(slots[0].claim.append).toBe("sidebar.content")
+  })
+
+  itRender("claims session.panel for the viewer as well as the sidebar", async () => {
+    const { default: mod } = await load()
+    const { context, slots } = createMockContext()
+    await mod.setup(context)
+
+    // Two claims now. The sidebar still comes first, so every helper that
+    // reaches for `slots[0]` is unchanged, and the viewer renders into the
+    // surface OpenCode documents as the one for interactive plugin content.
+    expect(slots).toHaveLength(2)
+    expect(slots.map((s) => s.claim.append)).toEqual(["sidebar.content", "session.panel"])
+  })
+
+  itRender("renders the viewer only for its own panel name", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    // The panel is a shared slot: another plugin's panel has to render nothing
+    // here, or two claims would draw over each other.
+    expect(m.renderViewer("someone-elses-panel")).toBeNull()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+
+    const element = m.renderViewer("filetree.viewer")
+    expect(element).not.toBeNull()
+    expect(element.props.path).toBe("/proj/f1")
   })
 
   itRender("renders the tree for the sidebar's session", async () => {
@@ -408,63 +543,235 @@ describe("plugin entry (sidebar spike)", () => {
     expect(root.focused).toBe(false)
   })
 
-  itRender("enter on a file spawns the editor without touching the expansion", async () => {
+  itRender("enter on a file opens the viewer panel and spawns nothing", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
-    // f1 is a file. A command that always exists and exits immediately stands in
-    // for a real editor; the argv it is handed is commands.ts's own contract.
+    // f1 is a file. Nothing leaves the process: there is no `$EDITOR` to read,
+    // no child process to spawn, and no promise for the keypress to await.
     state.setCursor(1)
     const editor = process.env.EDITOR
     process.env.EDITOR = process.platform === "win32" ? "cmd" : "/usr/bin/true"
     try {
-      await m.command("filetree.open")!.run()
+      m.command("filetree.open")!.run()
       await wait(50)
     } finally {
       if (editor === undefined) delete process.env.EDITOR
       else process.env.EDITOR = editor
     }
 
+    expect(m.panelCalls).toEqual([
+      { action: "close" },
+      { action: "open", name: "filetree.viewer" },
+    ])
+    expect(m.viewerEnabled()).toBe(true)
+    // A file is not a folder, so the expansion is untouched by all this.
     expect([...state.expanded()]).toEqual([])
     expect(m.toasts).toEqual([])
   })
 
-  itRender("toasts instead of throwing when the editor cannot be spawned", async () => {
+  itRender("enter expands a folder instead of opening the viewer", async () => {
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
     const state = m.panelState()
 
-    state.setCursor(1)
-    const editor = process.env.EDITOR
-    process.env.EDITOR = "definitely-not-a-real-editor-xyz"
-    try {
-      await m.command("filetree.open")!.run()
-      await wait(50)
-    } finally {
-      if (editor === undefined) delete process.env.EDITOR
-      else process.env.EDITOR = editor
-    }
-
-    expect(m.toasts).toHaveLength(1)
-    expect(m.toasts[0].variant).toBe("error")
-    expect(m.toasts[0].message).toContain("f1")
-  })
-
-  itRender("enter expands a folder instead of launching the editor", async () => {
-    const { default: mod } = await load()
-    const m = createMockContext()
-    await mod.setup(m.context)
-    const state = m.panelState()
-
-    // f0 is a folder.
+    // f0 is a folder. The viewer refuses to read one and would show that refusal
+    // where the reader expected the tree to move.
     state.setCursor(0)
     m.command("filetree.open")!.run()
     await wait(120)
 
     expect([...state.expanded()]).toEqual(["/proj/f0"])
+    expect(m.panelCalls).toEqual([])
+    expect(m.viewerEnabled()).toBe(false)
+  })
+
+  itRender("a second enter on another file shows the new file", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    // The reader reads its file in the component body and Solid never re-runs a
+    // body, so a panel left open across a second `enter` would keep showing the
+    // first file. Closing the panel before reopening it is what guarantees a
+    // fresh mount, and this is the assertion that the path actually moves.
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    expect(m.renderViewer("filetree.viewer").props.path).toBe("/proj/f1")
+
+    state.setCursor(2)
+    m.command("filetree.open")!.run()
+
+    expect(m.renderViewer("filetree.viewer").props.path).toBe("/proj/f2")
+    // Two opens, each preceded by a close: that is the remount.
+    expect(m.panelCalls).toEqual([
+      { action: "close" },
+      { action: "open", name: "filetree.viewer" },
+      { action: "close" },
+      { action: "open", name: "filetree.viewer" },
+    ])
+  })
+
+  itRender("esc closes the viewer panel and stops its keys", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+    expect(m.viewerEnabled()).toBe(true)
+
+    m.command("filetree.viewer.close")!.run()
+
+    expect(m.panelCalls[m.panelCalls.length - 1]).toEqual({ action: "close" })
+    expect(m.viewerEnabled()).toBe(false)
+  })
+
+  itRender("holds the viewer keys off until a file is opened", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    // The viewer layer binds up/down, which the session list and the tree both
+    // want. It must never be live just because the plugin loaded.
+    expect(m.viewerLayer()).toBeDefined()
+    expect(m.viewerEnabled()).toBe(false)
+  })
+
+  itRender("the viewer layer outranks the tree's nav layer, which binds the same keys", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    // Both layers bind up/down. Layers resolve by `priority` descending and then
+    // by registration order, so an equal priority would leave the winner
+    // depending on where this layer happens to be registered -- invisible at the
+    // call site, and exactly the kind of thing a future edit silently breaks.
+    // The host's own layer, gated on `currentFocusedEditor === null`, binds the
+    // same keys too and is beaten by any positive priority.
+    const viewer = m.viewerLayer()
+    const nav = m.navLayer()
+
+    expect(viewer.priority).toBeGreaterThan(0)
+    expect(viewer.priority).toBeGreaterThan(nav.priority)
+    expect(viewer.commands.map((c: any) => c.bind)).toEqual([
+      "down",
+      "up",
+      "pagedown",
+      "pageup",
+      "escape",
+    ])
+  })
+
+  itRender("the viewer layer's gate is plugin state, not renderer focus", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+
+    // The host re-asserts focus on the prompt about a second after anything takes
+    // it, which is what made every focus-derived gate flap. The layer has to stay
+    // live through that, and has to stay dead once the panel is closed.
+    m.focusElsewhere()
+    expect(m.viewerEnabled()).toBe(true)
+
+    m.command("filetree.viewer.close")!.run()
+    m.focusTree(m.rootBox())
+    expect(m.viewerEnabled()).toBe(false)
+  })
+
+  itRender("up and down move the viewer's window and nothing else", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    // A file long enough to actually scroll through, and the tree's own cursor
+    // parked on it so nothing here can be the tree moving.
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(200), isDirectory: false }])
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    // The plugin holds the viewer's writer, not its value, so what the plugin's
+    // side can be held to is exactly what it asks the offset to become.
+    const viewer = m.viewerOffsets()
+
+    m.command("filetree.viewer.down")!.run()
+    m.command("filetree.viewer.down")!.run()
+    const written = viewer.written
+
+    // The panel is 40 rows less the viewer's two chrome rows, so 38 rows of a
+    // 200-line file scroll as far as 162 -- two lines is nowhere near the end,
+    // and each press moves exactly one.
+    expect(written).toEqual([1, 2])
+    expect(viewer.offset()).toBe(2)
+    expect(state.cursor()).toBe(0)
+    expect([...state.expanded()]).toEqual([])
+    expect(m.prompts).toEqual([])
+    expect(m.panelCalls.filter((p) => p.action === "open")).toHaveLength(1)
+  })
+
+  itRender("up from the first line stays on the first line", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(200), isDirectory: false }])
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+    m.command("filetree.viewer.up")!.run()
+    m.command("filetree.viewer.up")!.run()
+
+    // The clamp is the viewer's own, but asking for a negative offset must not
+    // be able to reach it -- a window at -1 renders nothing at all.
+    expect(viewer.written).toEqual([0, 0])
+  })
+
+  itRender("pageup and pagedown move the viewer's window and nothing else", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(200), isDirectory: false }])
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+
+    m.command("filetree.viewer.page.down")!.run()
+    m.command("filetree.viewer.page.up")!.run()
+    const written = viewer.written
+
+    // Half of 38 rows is 19, and pageup walks it all the way back, so a page
+    // step is visible rather than lost in the clamp.
+    expect(written).toEqual([19, 0])
+    expect(state.cursor()).toBe(0)
+    expect(m.prompts).toEqual([])
+  })
+
+  itRender("paging a file that fits cannot scroll it at all", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(3), isDirectory: false }])
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+    m.command("filetree.viewer.page.down")!.run()
+    m.command("filetree.viewer.page.down")!.run()
+
+    // Three lines in a 38-row panel: there is nothing below the first line, and
+    // the header saying "1-3 of 3" has to stay true.
+    expect(viewer.written).toEqual([0, 0])
   })
 
   itRender("s uses the session the sidebar claim carries", async () => {

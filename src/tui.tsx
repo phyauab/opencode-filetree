@@ -1,7 +1,13 @@
 import { Plugin } from "@opencode/plugin/tui"
+import type { PanelInput } from "@opencode/plugin/tui/context"
+import { createSignal } from "solid-js"
 import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
-import { createTreeCommands, spawnEditor, promptSession } from "./commands"
+import { createTreeCommands, promptSession } from "./commands"
+import type { DirEntry } from "./fileSystem"
+import { FileViewer, VIEWER_ROWS_CHROME } from "./viewer/FileViewer"
+import { readForView } from "./viewer/readForView"
+import { scrollByLine, scrollByPage } from "./viewer/scroll"
 import { trace } from "./trace"
 
 /**
@@ -11,6 +17,9 @@ import { trace } from "./trace"
  * docs/superpowers/plans/2026-10-08-sidebar-spike.md for what it tests and what
  * to look for. Nothing here is a decision to keep.
  */
+
+/** The name the viewer claims `session.panel` under. */
+const VIEWER_PANEL = "filetree.viewer"
 
 /** Minimal shape of the tree's root renderable, for focus gating. */
 type TreeRoot = {
@@ -55,6 +64,74 @@ export default Plugin.define({
      */
     let keysHeld = false
 
+    /*
+     * What the viewer layer is allowed to do, and what the keys are allowed to
+     * move.
+     *
+     * `viewerOpen` is the whole gate, for the same reason `keysHeld` is: the
+     * host re-asserts focus on the prompt about a second after anything takes
+     * it, so a focus-derived gate flaps and the arrows stop working. The panel
+     * slot's own input would be just as unreliable -- it is client-local host
+     * state that a close elsewhere can move under us.
+     */
+    const [viewerOpen, setViewerOpen] = createSignal(false)
+    const [viewerPath, setViewerPath] = createSignal<string | undefined>(undefined)
+    /**
+     * Lines in the file on screen, or 0 when there are none to scroll through.
+     * Read again here rather than taken from the viewer, which hands over only
+     * its writer; see the comment on `openViewer` for why a second read is the
+     * cheaper of the two options.
+     */
+    const [viewerLines, setViewerLines] = createSignal(0)
+    /*
+     * The viewer's scroll writer, held as the one-layer-nested type the prop
+     * declares: a function that takes an updater and applies it.
+     *
+     * The nested type is the one the prop declares: a function that takes an
+     * updater and applies it. `FileViewer` hands over `setScroll`, Solid's own
+     * setter, so calling it with an updater below is the same call Solid would
+     * make itself. The declared type and the value handed over are one function
+     * layer apart -- the type describes what the writer does, the value IS the
+     * writer -- so the single cast at the handoff is where that difference is
+     * absorbed, and nowhere else.
+     *
+     * Nothing re-clamps here. `scrollByLine`/`scrollByPage` bound the step
+     * against the line count and row count, and the viewer's own `offset()`
+     * clamps every read of the offset, so no value written from here can put
+     * the window outside the file.
+     */
+    /**
+     * The viewer's scroll offset's WRITER, not its value, because the offset
+     * belongs to the component that owns the repaint. Whoever drives it says how
+     * far to move; the viewer's own `offset()` decides what is legal.
+     */
+    let setViewerScroll: ((fn: (prev: number) => number) => void) | undefined
+
+    /**
+     * Rows the viewer may spend on file content.
+     *
+     * A signal rather than a number read at open time, because that is what
+     * makes `props.height` a real reactive read inside the viewer's repaint
+     * effect: under babel-preset-solid the JSX expression below compiles to a
+     * getter, so the effect depends on this signal and a resize repaints. A
+     * plain number handed in as a value would leave the effect tracking only
+     * the scroll offset, which is the bug this repo has already paid for twice.
+     */
+    const [terminalHeight, setTerminalHeight] = createSignal(
+      context.renderer?.height ?? 40,
+    )
+    const viewerHeight = () => Math.max(1, terminalHeight() - VIEWER_ROWS_CHROME)
+
+    const measureTerminal = () => {
+      const next = context.renderer?.height
+      if (typeof next === "number" && next > 0) setTerminalHeight(next)
+    }
+    // An EventEmitter's `on` returns the emitter, not an unsubscribe, so the
+    // teardown has to be the matching `off` -- the same shape FileTree's
+    // resize effect uses, hoisted out of a component because here there is no
+    // owner to hang a cleanup on.
+    context.renderer?.on?.("resize", measureTerminal)
+
     /** Focus-gated, for the trace and for nothing that decides behaviour. */
     const focusedWithinTree = () => {
       let current: TreeRoot | null | undefined = context.renderer?.currentFocusedRenderable
@@ -82,6 +159,50 @@ export default Plugin.define({
       return current.constructor?.name ?? "unknown"
     }
 
+    /*
+     * Opening a file, and closing it again.
+     *
+     * `FileViewer` reads its file in the component body, and Solid never re-runs
+     * a body, so the path it read is the path this mount shows. A second `enter`
+     * on a different file therefore has to arrive on a *fresh mount*, which is
+     * why the panel is closed before it is reopened rather than just reopened:
+     * closing is what tears the slot's content down. Reopening the same name
+     * with different contents would hand the new path to an instance already on
+     * screen, and the reader would be looking at the previous file with no way
+     * to tell why.
+     *
+     * The line count is read a second time for the same reason the panel is
+     * closed: the viewer keeps its read to itself and hands over only the
+     * writer, so the keys have no way to ask how long the file is. `readForView`
+     * is capped and synchronous, so this costs one bounded read per open rather
+     * than a per-keypress one, and a disagreement between the two reads is
+     * harmless -- the viewer's own `offset()` clamps every read of the offset,
+     * so the window is never outside the file either way.
+     */
+    const openViewer = (entry: DirEntry) => {
+      const file = readForView(entry.path)
+      setViewerScroll = undefined
+      setViewerPath(entry.path)
+      setViewerLines(file.kind === "text" ? file.totalLines : 0)
+      context.ui.panel.close()
+      setViewerOpen(context.ui.panel.open(VIEWER_PANEL))
+      trace("viewer.open", { path: entry.path, lines: viewerLines(), kind: file.kind })
+    }
+
+    const closeViewer = () => {
+      setViewerScroll = undefined
+      setViewerOpen(false)
+      context.ui.panel.close()
+      trace("viewer.close")
+    }
+
+    /** Moves the window, in lines or in half-screens. */
+    const scrollViewer = (step: (prev: number) => number) => {
+      const rows = viewerHeight()
+      setViewerScroll?.((prev) => step(prev))
+      trace("viewer.scroll", { rows, lines: viewerLines(), open: viewerOpen() })
+    }
+
     const tree = createTreeCommands({
       visibleNodes: state.visibleNodes,
       currentEntry: state.currentEntry,
@@ -89,7 +210,7 @@ export default Plugin.define({
       setExpanded: state.setExpanded,
       clampCursor: state.clampCursor,
       reload: state.reload,
-      openInEditor: spawnEditor,
+      openInViewer: openViewer,
       sendToSession: (entry) => {
         void promptSession(context.client, sessionID, entry).then((result) => {
           if (!result.ok) notify(`Could not send ${entry.name}: ${result.error}`, "error")
@@ -106,18 +227,16 @@ export default Plugin.define({
      * move a selection marker one row. Repainting is `renderer.requestRender()`
      * in one effect inside FileTree, so it covers keys, clicks, the file watcher
      * and lazy folder loads together and nothing has to remember to ask.
+     *
+     * `open` no longer awaits anything. Spawning `$EDITOR` returned a promise and
+     * a failure to report; showing a file in our own panel returns a boolean and
+     * nothing else, so there is no result to inspect and no toast to raise.
      */
     const nav = {
       move: (delta: number) => tree.move(delta),
       toggle: () => tree.toggle(),
       refresh: () => tree.refresh(),
-      open: async () => {
-        const entry = state.currentEntry()
-        const result = await tree.open()
-        if (result && !result.ok) {
-          notify(`Could not open ${entry?.name ?? "file"}: ${result.error}`, "error")
-        }
-      },
+      open: () => tree.open(),
       send: () => tree.send(),
     }
 
@@ -161,6 +280,48 @@ export default Plugin.define({
       },
     })
     trace("slot.claimed", { unregister: typeof unregisterSlot })
+
+    /*
+     * The viewer's claim on `session.panel`.
+     *
+     * A plain `if` rather than a `<Show>`, for the reason the viewer itself
+     * settled: `scripts/test-stubs.ts` defines `Show` as `() => null` and the
+     * stub records `createComponent(Show, props)` without ever calling it, so
+     * anything inside a `<Show>` is unreachable from a test. A ternary returning
+     * null renders nothing for every other plugin's panel and keeps the viewer's
+     * own element inspectable, which is what pins the path a second `enter`
+     * hands over.
+     *
+     * `path` and `height` are read as signals through the JSX getter, so this
+     * render is as reactive as the build allows: a resize changes what is
+     * visible without anything having to close and reopen the panel.
+     */
+    const unregisterViewer = context.ui.slot({
+      append: "session.panel",
+      render: (input: PanelInput) => {
+        if (input.name !== VIEWER_PANEL) return null
+        const path = viewerPath()
+        if (!path) return null
+        return (
+          <FileViewer
+            path={path}
+            height={viewerHeight()}
+            context={context}
+            // The viewer's own writer, held so the keymap can move the offset
+            // without owning it. Reset on every open so a keypress can never
+            // reach the writer of a viewer that has been torn down.
+            //
+            // The declared parameter type and the value `FileViewer` actually hands over
+            // are one function layer apart -- see the note on `setViewerScroll`
+            // -- so this is the one place that difference is cast away.
+            scrollTo={(setOffset) => {
+              setViewerScroll = setOffset as unknown as (fn: (prev: number) => number) => void
+            }}
+          />
+        )
+      },
+    })
+    trace("viewer.claimed", { unregister: typeof unregisterViewer })
 
     /*
      * ctrl+y gives the keyboard to the tree. There is nothing to open or close:
@@ -276,7 +437,7 @@ export default Plugin.define({
             { id: "filetree.expand", title: "File tree: expand", bind: "right", run: nav.toggle },
             { id: "filetree.collapse", title: "File tree: collapse", bind: "left", run: nav.toggle },
             { id: "filetree.refresh", title: "File tree: refresh", bind: "r", run: () => nav.refresh() },
-            { id: "filetree.open", title: "File tree: open in editor", bind: "enter", run: () => nav.open() },
+            { id: "filetree.open", title: "File tree: open file", bind: "enter", run: () => nav.open() },
             { id: "filetree.send", title: "File tree: send to session", bind: "s", run: () => nav.send() },
             // esc hands the keyboard back instead of closing anything.
             {
@@ -303,8 +464,77 @@ export default Plugin.define({
       trace("layer.threw", { layer: "nav", error: String(error) })
     }
 
+    /*
+     * The viewer's keys, and the layer ordering that makes them work.
+     *
+     * The priority is higher than the tree's nav layer, and strictly greater
+     * than it rather than equal, because both layers bind up/down and tie-break
+     * on registration order -- which is invisible at the call site. A future
+     * edit that moved this registration above the nav layer would quietly hand
+     * the arrows back to the tree, with nothing in the code saying so. The
+     * suite asserts the ordering rather than trusting this comment.
+     *
+     * Against the *host's* layer the same argument applies one level down: it is
+     * gated on `currentFocusedEditor === null`, which is true for anything
+     * non-editor, viewer included, and it binds down/up for session and subagent
+     * navigation. Any positive priority outranks it.
+     */
+    try {
+      context.keymap.layer(() => {
+        trace("layer.factory", { layer: "viewer" })
+        return {
+          enabled: () => viewerOpen(),
+          priority: 20,
+          commands: [
+            {
+              id: "filetree.viewer.down",
+              title: "File viewer: scroll down",
+              bind: "down",
+              run: () => scrollViewer((prev) => scrollByLine(prev, 1, viewerLines(), viewerHeight())),
+            },
+            {
+              id: "filetree.viewer.up",
+              title: "File viewer: scroll up",
+              bind: "up",
+              run: () => scrollViewer((prev) => scrollByLine(prev, -1, viewerLines(), viewerHeight())),
+            },
+            {
+              id: "filetree.viewer.page.down",
+              title: "File viewer: scroll down a page",
+              bind: "pagedown",
+              run: () => scrollViewer((prev) => scrollByPage(prev, 1, viewerLines(), viewerHeight())),
+            },
+            {
+              id: "filetree.viewer.page.up",
+              title: "File viewer: scroll up a page",
+              bind: "pageup",
+              run: () => scrollViewer((prev) => scrollByPage(prev, -1, viewerLines(), viewerHeight())),
+            },
+            {
+              id: "filetree.viewer.close",
+              title: "File viewer: close",
+              bind: "escape",
+              run: closeViewer,
+            },
+          ],
+          bindings: [
+            "filetree.viewer.down",
+            "filetree.viewer.up",
+            "filetree.viewer.page.down",
+            "filetree.viewer.page.up",
+            "filetree.viewer.close",
+          ],
+        }
+      })
+      trace("layer.registered", { layer: "viewer" })
+    } catch (error) {
+      trace("layer.threw", { layer: "viewer", error: String(error) })
+    }
+
     return () => {
       unregisterSlot()
+      unregisterViewer()
+      context.renderer?.off?.("resize", measureTerminal)
     }
   },
 })
