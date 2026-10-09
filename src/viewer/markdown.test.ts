@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test"
 import { isMarkdown, buildSyntaxStyle, type MarkdownTheme } from "./markdown"
-import { SyntaxStyle } from "@opentui/core"
+import { SyntaxStyle, type RGBA } from "@opentui/core"
 import { syntaxStyleAllocations } from "../../scripts/test-stubs"
 
 /** The scopes the stubbed SyntaxStyle recorded, keyed for lookup. */
@@ -10,16 +10,52 @@ const scopesOf = (style: any): Map<string, any> => {
   return map
 }
 
+/**
+ * An `RGBA`, in the shape the host resolves its theme colours to.
+ *
+ * The real class keeps channels in a `Uint16Array` and exposes them as 0..1
+ * getters (`@opentui/core`, `class RGBA`); this reproduces that shape exactly,
+ * getters included, because reading those getters is what `tokenValue` does.
+ * The stub `@opentui/core` exports no `RGBA`, so the real class is not
+ * importable here -- and a fixture of plain hex strings is what let the
+ * string-shaped `MarkdownTheme` look correct while the live host rendered
+ * every markdown file white, so the shape is the fixture's whole point.
+ */
+const rgbaHex = (hex: string): RGBA => {
+  const value = Number.parseInt(hex.slice(1), 16)
+  const buffer = new Uint16Array([(value >> 16) & 255, (value >> 8) & 255, value & 255, 255])
+  // One cast, confined to this fixture factory: the object reproduces the
+  // channels the reader reads and the class's own storage, and the rest of the
+  // class (`toInts`, `meta`, ...) is never touched on this path -- what the
+  // tests need is the shape `tokenValue` accepts, not a second implementation
+  // of the class.
+  return {
+    buffer,
+    get r() {
+      return (buffer[0] & 255) / 255
+    },
+    get g() {
+      return (buffer[1] & 255) / 255
+    },
+    get b() {
+      return (buffer[2] & 255) / 255
+    },
+    get a() {
+      return (buffer[3] & 255) / 255
+    },
+  } as unknown as RGBA
+}
+
 const fullTheme = {
-  text: { base: "#ffffff" },
+  text: { base: rgbaHex("#ffffff") },
   syntax: {
-    comment: "#5c6370", keyword: "#c678dd", function: "#61afef", variable: "#abb2bf",
-    string: "#98c379", number: "#d19a66", type: "#e5c07b", operator: "#56b6c2",
-    punctuation: "#abb2bf",
+    comment: rgbaHex("#5c6370"), keyword: rgbaHex("#c678dd"), function: rgbaHex("#61afef"), variable: rgbaHex("#abb2bf"),
+    string: rgbaHex("#98c379"), number: rgbaHex("#d19a66"), type: rgbaHex("#e5c07b"), operator: rgbaHex("#56b6c2"),
+    punctuation: rgbaHex("#abb2bf"),
   },
   markdown: {
-    heading: "#e06c75", strong: "#e06c75", emphasis: "#e5c07b", code: "#98c379",
-    blockQuote: "#5c6370", link: "#61afef", linkText: "#61afef", listItem: "#e5c07b",
+    heading: rgbaHex("#e06c75"), strong: rgbaHex("#e06c75"), emphasis: rgbaHex("#e5c07b"), code: rgbaHex("#98c379"),
+    blockQuote: rgbaHex("#5c6370"), link: rgbaHex("#61afef"), linkText: rgbaHex("#61afef"), listItem: rgbaHex("#e5c07b"),
   },
 }
 
@@ -39,22 +75,22 @@ describe("isMarkdown", () => {
 describe("buildSyntaxStyle", () => {
   it("maps the host's syntax tokens onto the scopes the host itself uses", () => {
     const scopes = scopesOf(buildSyntaxStyle(fullTheme))
-    expect(scopes.get("comment")).toEqual({ foreground: "#5c6370", italic: true })
-    expect(scopes.get("keyword")).toEqual({ foreground: "#c678dd" })
-    expect(scopes.get("string")).toEqual({ foreground: "#98c379" })
-    expect(scopes.get("number")).toEqual({ foreground: "#d19a66" })
-    expect(scopes.get("function")).toEqual({ foreground: "#61afef" })
-    expect(scopes.get("punctuation")).toEqual({ foreground: "#abb2bf" })
+    expect(scopes.get("comment")).toEqual({ foreground: rgbaHex("#5c6370"), italic: true })
+    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#c678dd") })
+    expect(scopes.get("string")).toEqual({ foreground: rgbaHex("#98c379") })
+    expect(scopes.get("number")).toEqual({ foreground: rgbaHex("#d19a66") })
+    expect(scopes.get("function")).toEqual({ foreground: rgbaHex("#61afef") })
+    expect(scopes.get("punctuation")).toEqual({ foreground: rgbaHex("#abb2bf") })
   })
 
   it("maps the markdown tokens onto the markup scopes", () => {
     const scopes = scopesOf(buildSyntaxStyle(fullTheme))
-    expect(scopes.get("markup.heading")).toEqual({ foreground: "#e06c75", bold: true })
-    expect(scopes.get("markup.heading.1")).toEqual({ foreground: "#e06c75", bold: true, underline: true })
-    expect(scopes.get("markup.bold")).toEqual({ foreground: "#e06c75", bold: true })
-    expect(scopes.get("markup.italic")).toEqual({ foreground: "#e5c07b", italic: true })
-    expect(scopes.get("markup.quote")).toEqual({ foreground: "#5c6370", italic: true })
-    expect(scopes.get("markup.raw")).toEqual({ foreground: "#98c379" })
+    expect(scopes.get("markup.heading")).toEqual({ foreground: rgbaHex("#e06c75"), bold: true })
+    expect(scopes.get("markup.heading.1")).toEqual({ foreground: rgbaHex("#e06c75"), bold: true, underline: true })
+    expect(scopes.get("markup.bold")).toEqual({ foreground: rgbaHex("#e06c75"), bold: true })
+    expect(scopes.get("markup.italic")).toEqual({ foreground: rgbaHex("#e5c07b"), italic: true })
+    expect(scopes.get("markup.quote")).toEqual({ foreground: rgbaHex("#5c6370"), italic: true })
+    expect(scopes.get("markup.raw")).toEqual({ foreground: rgbaHex("#98c379") })
   })
 
   it("returns the empty style when there is no theme at all", () => {
@@ -69,8 +105,8 @@ describe("buildSyntaxStyle", () => {
   })
 
   it("skips tokens the theme does not carry instead of guessing colours", () => {
-    const scopes = scopesOf(buildSyntaxStyle({ syntax: { comment: "#111111" } }))
-    expect(scopes.get("comment")).toEqual({ foreground: "#111111", italic: true })
+    const scopes = scopesOf(buildSyntaxStyle({ syntax: { comment: rgbaHex("#111111") } }))
+    expect(scopes.get("comment")).toEqual({ foreground: rgbaHex("#111111"), italic: true })
     expect(scopes.has("string")).toBe(false)
     expect(scopes.has("markup.heading")).toBe(false)
   })
@@ -78,30 +114,44 @@ describe("buildSyntaxStyle", () => {
   it("memoises on the token values, so a theme change is picked up", () => {
     const first = buildSyntaxStyle(fullTheme)
     expect(buildSyntaxStyle(fullTheme)).toBe(first)
-    const second = buildSyntaxStyle({ ...fullTheme, syntax: { ...fullTheme.syntax, keyword: "#ff0000" } })
+    const second = buildSyntaxStyle({ ...fullTheme, syntax: { ...fullTheme.syntax, keyword: rgbaHex("#ff0000") } })
     expect(second).not.toBe(first)
-    expect(scopesOf(second).get("keyword")).toEqual({ foreground: "#ff0000" })
+    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000") })
   })
 
   // Review focus #2, for the one row that reads a second token. Every other row
   // takes a foreground alone, so the only way to half-fill one is here.
   it("gives inline code a background when the theme carries one", () => {
-    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: "#98c379" }, background: { base: "#1e222a" } }))
-    expect(scopes.get("markup.raw.inline")).toEqual({ foreground: "#98c379", background: "#1e222a" })
+    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: rgbaHex("#98c379") }, background: { base: rgbaHex("#1e222a") } }))
+    expect(scopes.get("markup.raw.inline")).toEqual({ foreground: rgbaHex("#98c379"), background: rgbaHex("#1e222a") })
     // The block form shares the foreground and takes no background at all.
-    expect(scopes.get("markup.raw")).toEqual({ foreground: "#98c379" })
+    expect(scopes.get("markup.raw")).toEqual({ foreground: rgbaHex("#98c379") })
   })
 
   it("drops the inline-code row whole when the theme has no background", () => {
-    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: "#98c379" } }))
+    const scopes = scopesOf(buildSyntaxStyle({ markdown: { code: rgbaHex("#98c379") } }))
     expect(scopes.has("markup.raw.inline")).toBe(false)
-    expect(scopes.get("markup.raw")).toEqual({ foreground: "#98c379" })
+    expect(scopes.get("markup.raw")).toEqual({ foreground: rgbaHex("#98c379") })
   })
 
-  it("treats an empty string as a token that is not there", () => {
-    const scopes = scopesOf(buildSyntaxStyle({ syntax: { comment: "", keyword: "#c678dd" } }))
+  it("treats anything that is not a resolved colour as a token that is not there", () => {
+    // A theme is data the host assembled from a user's config, and whatever the
+    // config held before resolution can still be sitting in it: a hex string
+    // that was never parsed, a number, null. The reader checks the shape rather
+    // than the type it wishes were there, so all of them read as absent.
+    const mixed = {
+      syntax: {
+        comment: "#5c6370",
+        keyword: 42,
+        function: null,
+        variable: rgbaHex("#abb2bf"),
+      },
+    }
+    const scopes = scopesOf(buildSyntaxStyle(mixed as unknown as MarkdownTheme))
     expect(scopes.has("comment")).toBe(false)
-    expect(scopes.get("keyword")).toEqual({ foreground: "#c678dd" })
+    expect(scopes.has("keyword")).toBe(false)
+    expect(scopes.has("function")).toBe(false)
+    expect(scopes.get("variable")).toEqual({ foreground: rgbaHex("#abb2bf") })
   })
 })
 
@@ -115,8 +165,8 @@ describe("buildSyntaxStyle cost", () => {
   it("costs one construction per distinct theme, the empty one included", () => {
     // Colours no other test in this file uses, so both are cache misses however
     // warm the module already is by the time this runs.
-    const coldA = { syntax: { comment: "#010203" } }
-    const coldB = { syntax: { comment: "#040506" } }
+    const coldA = { syntax: { comment: rgbaHex("#010203") } }
+    const coldB = { syntax: { comment: rgbaHex("#040506") } }
     const start = syntaxStyleAllocations()
 
     // Pairs for the two themed cases, so a repeat of the *current* theme is
@@ -140,7 +190,7 @@ describe("buildSyntaxStyle cost", () => {
   })
 
   it("allocates once for a themed call and not again while the theme stands", () => {
-    const theme = { syntax: { string: "#070809" } }
+    const theme = { syntax: { string: rgbaHex("#070809") } }
     const start = syntaxStyleAllocations()
 
     const first = buildSyntaxStyle(theme)
@@ -156,8 +206,8 @@ describe("buildSyntaxStyle cost", () => {
     // cached would cost nothing here and the count would lie.
     const start = syntaxStyleAllocations()
 
-    const first = buildSyntaxStyle({ syntax: { string: "#131415" } })
-    const second = buildSyntaxStyle({ syntax: { string: "#161718" } })
+    const first = buildSyntaxStyle({ syntax: { string: rgbaHex("#131415") } })
+    const second = buildSyntaxStyle({ syntax: { string: rgbaHex("#161718") } })
 
     expect(syntaxStyleAllocations() - start).toBe(2)
     expect(second).not.toBe(first)
@@ -206,8 +256,108 @@ describe("buildSyntaxStyle when the theme cannot be read", () => {
     // a cached entry: the whole path has to run after the throw. `.not.toBe` is
     // the part that can fail -- the stub shares one object for `create()`, so a
     // return path that had been left on the fallback would compare equal here.
-    const scopes = scopesOf(buildSyntaxStyle({ syntax: { keyword: "#1b1c1d" } }))
-    expect(scopes.get("keyword")).toEqual({ foreground: "#1b1c1d" })
-    expect(buildSyntaxStyle({ syntax: { keyword: "#1b1c1d" } })).not.toBe(SyntaxStyle.create())
+    const scopes = scopesOf(buildSyntaxStyle({ syntax: { keyword: rgbaHex("#1b1c1d") } }))
+    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#1b1c1d") })
+    expect(buildSyntaxStyle({ syntax: { keyword: rgbaHex("#1b1c1d") } })).not.toBe(SyntaxStyle.create())
+  })
+})
+
+/*
+ * The theme shape the host actually resolves.
+ *
+ * Every block above used to feed `buildSyntaxStyle` string colours, because
+ * that is what this module's own `MarkdownTheme` type used to declare -- and
+ * that declaration was a guess, written while `@opencode/theme` was an optional
+ * peer nothing had installed. The real `Context["theme"]` is a `ResolvedTheme`,
+ * in which every colour is an `RGBA` instance, not a hex string. A reader that
+ * accepted only strings therefore found nothing at all in the live host: every
+ * token absent, every scope row skipped, the empty style returned, and a `.md`
+ * preview rendered white while the whole suite was green. The old suite pinned
+ * the bug in place by testing against the guess.
+ *
+ * The break this block guards against is that one: a reader that drops the
+ * host's real shape again. The production change that would fail it is
+ * `tokenValue` accepting something other than the colours the host resolves.
+ */
+describe("buildSyntaxStyle with the theme shape the host resolves", () => {
+  /** A `ResolvedTheme` as the host resolves one: every token an `RGBA`. */
+  const hostTheme = {
+    text: { base: rgbaHex("#abb2bf") },
+    syntax: {
+      comment: rgbaHex("#5c6370"),
+      keyword: rgbaHex("#c678dd"),
+      function: rgbaHex("#61afef"),
+      variable: rgbaHex("#abb2bf"),
+      string: rgbaHex("#98c379"),
+      number: rgbaHex("#d19a66"),
+      type: rgbaHex("#e5c07b"),
+      operator: rgbaHex("#56b6c2"),
+      punctuation: rgbaHex("#abb2bf"),
+    },
+    markdown: {
+      heading: rgbaHex("#e06c75"),
+      strong: rgbaHex("#e06c75"),
+      emphasis: rgbaHex("#e5c07b"),
+      code: rgbaHex("#98c379"),
+      blockQuote: rgbaHex("#5c6370"),
+      link: rgbaHex("#61afef"),
+      linkText: rgbaHex("#61afef"),
+      listItem: rgbaHex("#e5c07b"),
+    },
+    background: { base: rgbaHex("#1e222a") },
+  }
+
+  it("maps the host's RGBA tokens onto the scopes the host itself uses", () => {
+    const scopes = scopesOf(buildSyntaxStyle(hostTheme as unknown as MarkdownTheme))
+    // The value is handed on untouched, not converted: `ColorInput` is
+    // `string | RGBA` and the host's own bridge passes the RGBA straight in.
+    expect(scopes.get("comment")).toEqual({ foreground: hostTheme.syntax.comment, italic: true })
+    expect(scopes.get("keyword")).toEqual({ foreground: hostTheme.syntax.keyword })
+    expect(scopes.get("markup.heading")).toEqual({ foreground: hostTheme.markdown.heading, bold: true })
+    expect(scopes.get("markup.italic")).toEqual({ foreground: hostTheme.markdown.emphasis, italic: true })
+    expect(scopes.get("markup.raw.inline")).toEqual({ foreground: hostTheme.markdown.code, background: hostTheme.background.base })
+  })
+
+  it("memoises on the channel values, so a re-resolved theme costs nothing", () => {
+    // The host can rebuild the theme object between resolutions -- new RGBA
+    // instances, same colours -- and a key built from anything but the channel
+    // values would read that as a different theme and build a second style per
+    // viewer mount, which is the leak the cache exists to stop.
+    const again = {
+      text: { base: rgbaHex("#abb2bf") },
+      syntax: {
+        comment: rgbaHex("#5c6370"),
+        keyword: rgbaHex("#c678dd"),
+        function: rgbaHex("#61afef"),
+        variable: rgbaHex("#abb2bf"),
+        string: rgbaHex("#98c379"),
+        number: rgbaHex("#d19a66"),
+        type: rgbaHex("#e5c07b"),
+        operator: rgbaHex("#56b6c2"),
+        punctuation: rgbaHex("#abb2bf"),
+      },
+      markdown: {
+        heading: rgbaHex("#e06c75"),
+        strong: rgbaHex("#e06c75"),
+        emphasis: rgbaHex("#e5c07b"),
+        code: rgbaHex("#98c379"),
+        blockQuote: rgbaHex("#5c6370"),
+        link: rgbaHex("#61afef"),
+        linkText: rgbaHex("#61afef"),
+        listItem: rgbaHex("#e5c07b"),
+      },
+      background: { base: rgbaHex("#1e222a") },
+    }
+    const recoloured = {
+      text: { base: rgbaHex("#abb2bf") },
+      syntax: { ...hostTheme.syntax, keyword: rgbaHex("#ff0000") },
+      markdown: hostTheme.markdown,
+      background: hostTheme.background,
+    }
+    const first = buildSyntaxStyle(hostTheme as unknown as MarkdownTheme)
+    expect(buildSyntaxStyle(again as unknown as MarkdownTheme)).toBe(first)
+    const second = buildSyntaxStyle(recoloured as unknown as MarkdownTheme)
+    expect(second).not.toBe(first)
+    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000") })
   })
 })

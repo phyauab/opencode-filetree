@@ -1,4 +1,4 @@
-import { SyntaxStyle, type ThemeTokenStyle } from "@opentui/core"
+import { SyntaxStyle, type RGBA, type ThemeTokenStyle } from "@opentui/core"
 import { languageFor } from "./highlight"
 
 /**
@@ -17,18 +17,34 @@ import { languageFor } from "./highlight"
  * instead of a second opinion about it.
  */
 
-/** The subset of `ctx.theme` this feature reads. Structural, because the host's
- *  own theme type is an unresolved optional peer. */
+/**
+ * The subset of `ctx.theme` this feature reads.
+ *
+ * `ctx.theme` is a `ResolvedTheme` (`@opencode/theme/tui`), and every colour in
+ * one is an `RGBA` from `@opentui/core` -- `text.base`, each `syntax` token,
+ * each `markdown` token, `background.base`. The names are the theme schema's
+ * own (`SyntaxToken`, `MarkdownToken`); `RGBA` is the one type this module
+ * already shares with `@opentui/core`, which is why only the shape is declared
+ * here rather than imported -- `@opencode/theme` is an optional peer this
+ * plugin must not depend on at runtime.
+ *
+ * An earlier revision declared the values as `string`, guessing that a theme
+ * carries hex. It carries `RGBA`, so the reader below -- which then accepted
+ * only strings -- read every token as absent: zero scope rows, the empty style,
+ * and a white `.md` preview in the live host, with the whole suite green
+ * against the guess. That is the second fake-shaped bug this viewer has
+ * shipped (the first clamped markdown scrolling against a `maxScrollTop` the
+ * renderable does not have), and it has the same lesson: the host's real shape
+ * is the only shape worth writing down.
+ */
 export type MarkdownTheme = {
-  text?: { base?: string }
-  syntax?: Partial<Record<"comment" | "keyword" | "function" | "variable" | "string" | "number" | "type" | "operator" | "punctuation", string>>
-  markdown?: Partial<Record<"heading" | "strong" | "emphasis" | "code" | "blockQuote" | "link" | "linkText" | "listItem", string>>
-  // Declared because the host's own bridge table reads it for inline code, not
-  // because it is known to exist: the theme shape recorded for this plan elides
-  // groups it does not name (`text` appears only as `feedback: {...}`), so
-  // absence was never established and guessing at it produced a wrong colour.
-  // See the `markup.raw.inline` row below.
-  background?: { base?: string }
+  text?: { base?: RGBA }
+  syntax?: Partial<Record<"comment" | "keyword" | "function" | "variable" | "string" | "number" | "type" | "operator" | "punctuation", RGBA>>
+  markdown?: Partial<Record<"heading" | "strong" | "emphasis" | "code" | "blockQuote" | "link" | "linkText" | "listItem", RGBA>>
+  // Declared because the host's own bridge reads it for inline code: the
+  // `markup.raw.inline` row below takes its background from `background.base`
+  // and is dropped whole when the theme offers none.
+  background?: { base?: RGBA }
 }
 
 /**
@@ -154,24 +170,57 @@ const TABLE_TOKENS: readonly TokenPath[] = [
   ),
 ]
 
+/**
+ * True for the values the host resolves its theme colours to.
+ *
+ * Structural rather than `instanceof RGBA`, on purpose. This plugin must not
+ * assume which module instance its `@opentui/core` import landed on -- every
+ * duplicate-runtime failure it is built to avoid has been an identity mismatch,
+ * so a class-identity check is exactly the wrong shape for this codebase. The
+ * channels are the class's public getters (`class RGBA` in `@opentui/core`:
+ * `r`, `g`, `b` and `a` are numbers read out of a `Uint16Array`), so a real
+ * instance of any copy passes, and nothing a malformed config could leave in
+ * its place -- a hex string, a number, null, a stray object -- does.
+ */
+function isRgba(value: unknown): value is RGBA {
+  const candidate = value as { r?: unknown; g?: unknown; b?: unknown; a?: unknown } | null | undefined
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof candidate.r === "number" &&
+    typeof candidate.g === "number" &&
+    typeof candidate.b === "number" &&
+    typeof candidate.a === "number"
+  )
+}
+
 /** Reads one token out of the theme, treating anything but a real colour as absent. */
-function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): string | undefined {
+function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): RGBA | undefined {
   const dot = path.indexOf(".")
   // One cast, at the only place the halves of a `TokenPath` meet again. Every
-  // group in `MarkdownTheme` is a bag of optional colour strings, so this reads
+  // group in `MarkdownTheme` is a bag of optional `RGBA`s, so this reads
   // whichever one the path names; what the checker will not accept is a plain
   // `string` indexing four different key unions at once, and narrowing each half
   // separately would need the same cast four times over.
-  const groups = theme as Record<string, Record<string, string | undefined> | undefined> | undefined
+  const groups = theme as Record<string, Record<string, unknown> | undefined> | undefined
   const value = groups?.[path.slice(0, dot)]?.[path.slice(dot + 1)]
   // A theme is data the host assembled from a user's config, so this guard is
-  // not paranoia: a number, null, and a stray object have all been plausible
-  // things to find in there. An empty string is rejected alongside them for a
-  // reason of this module's own rather than the host's: "" means "no colour" as
-  // surely as absent does, and letting it through would put an empty colour in
-  // the memo key and in a row's style while the skip-whole rule -- and every
-  // reader -- read it as a colour that is not there.
-  return typeof value === "string" && value !== "" ? value : undefined
+  // not paranoia: whatever the config held before resolution -- a string, a
+  // number, null, a stray object -- can land here, and only a real colour gets
+  // through. A colour the host did not resolve is a token that is not there.
+  return isRgba(value) ? value : undefined
+}
+
+/**
+ * One colour, spelled for the memo key.
+ *
+ * The channels rather than `toString()`: a colour that reaches this has already
+ * passed `isRgba`, so the getters are there to read, and two themes whose
+ * tokens are equal in value -- however many `RGBA` instances they arrived in --
+ * build one style between them.
+ */
+function colourKey(value: RGBA | undefined): string {
+  return value === undefined ? "" : `${value.r},${value.g},${value.b},${value.a}`
 }
 
 /**
@@ -220,7 +269,7 @@ export function buildSyntaxStyle(theme: MarkdownTheme | undefined): SyntaxStyle 
     // The key joins the values in table order with a blank for every absent
     // token, so two different themes cannot collide: a theme that lost a token
     // gets a shorter key rather than the key of a theme that never had it.
-    const key = TABLE_TOKENS.map((path) => tokenValue(theme, path) ?? "").join("\u0000")
+    const key = TABLE_TOKENS.map((path) => colourKey(tokenValue(theme, path))).join("\u0000")
     // The cache check comes before anything that allocates, and in particular
     // before the `create()` at the bottom of this block: a repeat has to cost
     // nothing, and an untokenised theme is the one that repeats most.

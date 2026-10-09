@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSignal } from "solid-js"
+import type { RGBA } from "@opentui/core"
 import { FileViewer, VIEWER_ROWS_CHROME } from "./FileViewer"
 import { MAX_VIEW_LINES } from "./readForView"
 
@@ -11,6 +12,38 @@ const created: string[] = []
 afterEach(() => {
   while (created.length > 0) rmSync(created.pop()!, { recursive: true, force: true })
 })
+
+/**
+ * An `RGBA`, in the shape the host resolves its theme colours to.
+ *
+ * The real class keeps channels in a `Uint16Array` and exposes them as 0..1
+ * getters (`@opentui/core`, `class RGBA`); this reproduces that shape, because
+ * reading those getters is what the viewer's theme reader does. The stubbed
+ * `@opentui/core` exports no `RGBA`, so the real class is not importable here.
+ */
+const rgba = (hex: string): RGBA => {
+  const value = Number.parseInt(hex.slice(1), 16)
+  const buffer = new Uint16Array([(value >> 16) & 255, (value >> 8) & 255, value & 255, 255])
+  // One cast, confined to this fixture factory: the object reproduces the
+  // channels the viewer's reader reads and the class's own storage, and the
+  // rest of the class is never touched on this path -- what the tests need is
+  // the shape `tokenValue` accepts, not a second implementation of it.
+  return {
+    buffer,
+    get r() {
+      return (buffer[0] & 255) / 255
+    },
+    get g() {
+      return (buffer[1] & 255) / 255
+    },
+    get b() {
+      return (buffer[2] & 255) / 255
+    },
+    get a() {
+      return (buffer[3] & 255) / 255
+    },
+  } as unknown as RGBA
+}
 
 function makeFile(name: string, contents: string | Buffer): string {
   const root = mkdtempSync(join(tmpdir(), "viewer-"))
@@ -389,12 +422,17 @@ describe("VIEWER_ROWS_CHROME", () => {
  * A theme with one real markdown token in it, so `buildSyntaxStyle` builds one
  * real scope row instead of falling back to the empty style.
  *
+ * The token is an `RGBA` because that is what the host resolves its theme to
+ * (`ResolvedTheme`); a hex string here would read as no colour at all, which is
+ * how the live host came to render every markdown file white while this suite
+ * passed.
+ *
  * It exists to make the theme -> context -> style wiring observable, which is
  * otherwise invisible: the element renders either way. It says nothing about
  * which files count as markdown -- the extension decides that alone, through
  * `isMarkdown` -- so a thinner theme must never be read as "not markdown".
  */
-const mdTheme = { markdown: { heading: "#e06c75" } }
+const mdTheme = { markdown: { heading: rgba("#e06c75") } }
 
 /**
  * The markdown element, which is the scrollbox's only child.
