@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { isMarkdown, buildSyntaxStyle } from "./markdown"
+import { isMarkdown, buildSyntaxStyle, type MarkdownTheme } from "./markdown"
 import { SyntaxStyle } from "@opentui/core"
 import { syntaxStyleAllocations } from "../../scripts/test-stubs"
 
@@ -161,5 +161,53 @@ describe("buildSyntaxStyle cost", () => {
 
     expect(syntaxStyleAllocations() - start).toBe(2)
     expect(second).not.toBe(first)
+  })
+})
+
+describe("buildSyntaxStyle when the theme cannot be read", () => {
+  // A getter that throws is the only way in without a constructor or a Proxy,
+  // and it is not contrived: `ctx.theme` is a large object the host builds from
+  // a user's config, so anything it computes is fair game for a bad value
+  // underneath. It reaches the catch because the key is the first thing read.
+  const throwingTheme = {
+    get syntax(): Record<string, string> {
+      throw new Error("boom")
+    },
+  }
+
+  // First in the block on purpose. The fallback it pins is a session-wide
+  // singleton, so every test after this one meets it already built and would
+  // count zero here -- this is the only one that can count from cold.
+  it("costs one allocation for a throwing theme however often it repeats", () => {
+    const start = syntaxStyleAllocations()
+
+    buildSyntaxStyle(throwingTheme as MarkdownTheme)
+    buildSyntaxStyle(throwingTheme as MarkdownTheme)
+    buildSyntaxStyle(throwingTheme as MarkdownTheme)
+
+    expect(syntaxStyleAllocations() - start).toBe(1)
+  })
+
+  it("does not throw, and hands back a usable style", () => {
+    const style = buildSyntaxStyle(throwingTheme as MarkdownTheme)
+    expect(style).toBe(SyntaxStyle.create())
+    // "Usable" means the scopes walk below is an empty list rather than
+    // undefined, so a caller reading `style.scopes` gets a list and not a crash.
+    expect(scopesOf(style).size).toBe(0)
+  })
+
+  it("does not let a bad theme poison the cache for every theme after it", () => {
+    // The assertion that matters most. A fallback that overwrote `cached` rather
+    // than sitting beside it would leave markdown uncoloured for the rest of the
+    // session, and every identity assertion in this file would still pass.
+    buildSyntaxStyle(throwingTheme as MarkdownTheme)
+
+    // A colour no other test uses, so this is a real build and not a re-read of
+    // a cached entry: the whole path has to run after the throw. `.not.toBe` is
+    // the part that can fail -- the stub shares one object for `create()`, so a
+    // return path that had been left on the fallback would compare equal here.
+    const scopes = scopesOf(buildSyntaxStyle({ syntax: { keyword: "#1b1c1d" } }))
+    expect(scopes.get("keyword")).toEqual({ foreground: "#1b1c1d" })
+    expect(buildSyntaxStyle({ syntax: { keyword: "#1b1c1d" } })).not.toBe(SyntaxStyle.create())
   })
 })

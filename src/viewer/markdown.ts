@@ -166,10 +166,11 @@ function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): string |
   const value = groups?.[path.slice(0, dot)]?.[path.slice(dot + 1)]
   // A theme is data the host assembled from a user's config, so this guard is
   // not paranoia: a number, null, and a stray object have all been plausible
-  // things to find in there. An empty string is rejected alongside them --
-  // `fromTheme` skips a falsy foreground but would pass "" through as a
-  // background unchanged, and a colour that names nothing is as useless as one
-  // that is missing.
+  // things to find in there. An empty string is rejected alongside them for a
+  // reason of this module's own rather than the host's: "" means "no colour" as
+  // surely as absent does, and letting it through would put an empty colour in
+  // the memo key and in a row's style while the skip-whole rule -- and every
+  // reader -- read it as a colour that is not there.
   return typeof value === "string" && value !== "" ? value : undefined
 }
 
@@ -177,13 +178,17 @@ function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): string |
  * The style this module last built, keyed by the tokens it was built from.
  *
  * `SyntaxStyle` holds a native handle and has a `destroy()` this never calls, so
- * every style built here is one the process keeps until it exits: one per
- * distinct theme, plus one per malformed theme that reaches the catch below. The
- * cache is what holds that line. Without it the cost is per *viewer mount*
- * rather than per *theme change* -- `FileViewer` asks for a style each time it
- * opens a `.md` file -- so an hour of reading files in one theme would leak an
- * hour's worth of native styles, and the worst case is the empty theme, which is
- * the one every file opened before the host resolved a theme would hit.
+ * every style built here is one the process keeps until it exits. The cache is
+ * what holds the count down, and because it holds one entry the bound is one
+ * style per cache miss -- which, with one plugin and one active theme, is one
+ * per theme change. The `fallback` slot below is the exception, and it is capped
+ * at one for the whole session rather than one per bad theme.
+ *
+ * Without the cache the cost is per *viewer mount* rather than per *theme
+ * change* -- `FileViewer` asks for a style each time it opens a `.md` file -- so
+ * an hour of reading files in one theme would leak an hour's worth of native
+ * styles, and the worst case is the empty theme, which is the one every file
+ * opened before the host resolved a theme would hit.
  */
 let cached: { key: string; style: SyntaxStyle } | null = null
 
