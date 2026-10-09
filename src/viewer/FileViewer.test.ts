@@ -174,6 +174,30 @@ describe("FileViewer", () => {
     expect(codeColorsOf(element)).toContain("magenta")
   })
 
+  it("gives an uncoloured piece no fg key at all, not an explicit undefined", () => {
+    // `highlight.ts` maps `operator` and `punctuation` to the theme default on
+    // purpose and leaves every unmapped token undefined, so most pieces of
+    // ordinary code arrive uncoloured. The row's props reach the renderable
+    // through a spread applied after the element was created with no options,
+    // and nobody has watched that ordering in a real TUI -- writing `fg:
+    // undefined` would ask an unobserved path to unset something the constructor
+    // had already left alone. Omitting the key cannot.
+    const path = makeFile("a.ts", "const value = 1\n")
+    const element = mount(path, 5)
+    const row = elements(element?.props?.children)[1]
+    const pieces = elements(row?.props?.children)
+      .filter((child: any) => child.type === "span")
+      .slice(1)
+
+    const coloured = pieces.filter((piece: any) => piece.props.fg !== undefined)
+    const uncoloured = pieces.filter((piece: any) => piece.props.fg === undefined)
+    // Both kinds really are present, so the assertion below is about the
+    // uncoloured ones specifically rather than about an all-default row.
+    expect(coloured.length).toBeGreaterThan(0)
+    expect(uncoloured.length).toBeGreaterThan(0)
+    expect(uncoloured.every((piece: any) => !("fg" in piece.props))).toBe(true)
+  })
+
   it("never wraps a row, truncating at its own width instead", () => {
     const path = makeFile("f.txt", "one\ntwo\n")
     const element = mount(path, 5)

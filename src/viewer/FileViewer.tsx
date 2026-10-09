@@ -8,14 +8,17 @@ import { maxScroll } from "./scroll"
 /**
  * Rows of the panel the viewer spends on something other than file content.
  *
- * The panel subtracts this from what it measured before handing `height` down,
- * which is how the viewer gets to stay ignorant of the terminal's size.
+ * One of the two is the header. The other is slack: the gutter is a prefix on
+ * the same row as the code it labels, not a row of its own, so a caller that
+ * reserved a row "for the gutter" would lose a line of content and get nothing
+ * back. The panel subtracts this from what it measured before handing `height`
+ * down, which is how the viewer stays ignorant of the terminal's size.
  */
-export const VIEWER_ROWS_CHROME = 2 // header + gutter allowance
+export const VIEWER_ROWS_CHROME = 2
 
 export type FileViewerProps = {
   path: string
-  /** Rows available for content, excluding the header and the gutter. */
+  /** Rows available for content, after the panel has taken its chrome off. */
   height: number
   /**
    * The plugin context, passed down by the plugin entry rather than read with
@@ -90,9 +93,19 @@ function messageFor(file: Exclude<ViewFile, { kind: "text" }>): string {
  * disagreeing about it. A plain spread rather than a cast on the element,
  * because a cast on the element would have to be written twice and would hide
  * the shape from every reader of the row.
+ *
+ * An uncoloured span gets NO `fg` key rather than an explicit `fg: undefined`,
+ * and that is the common case rather than an edge: `highlight.ts` maps
+ * `operator` and `punctuation` to the theme default on purpose and leaves every
+ * unmapped token undefined, so most spans in ordinary code arrive here with no
+ * colour. The props reach the renderable through `_$spread`/`_$setProp` after
+ * `_$createElement("span")` has already built it with no options at all, and
+ * nobody has watched that ordering happen in a real TUI. Omitting the key leaves
+ * the renderable exactly as the constructor left it; setting it to undefined
+ * asks a code path whose behaviour is unobserved to actively unset something.
  */
 function spanProps(fg: string | undefined): Record<string, string | undefined> {
-  return { fg }
+  return fg === undefined ? {} : { fg }
 }
 
 export const FileViewer: Component<FileViewerProps> = (props) => {
@@ -157,8 +170,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     if (file.kind !== "text") return name
     const start = offset()
     const last = Math.min(file.totalLines, start + visibleRows())
-    const range = file.totalLines === 0 ? "0" : `${start + 1}-${last}`
-    const position = `${name}  ${range} of ${file.totalLines}`
+    const position = `${name}  ${start + 1}-${last} of ${file.totalLines}`
     // Only said when content really was dropped: the reader compares the bytes
     // it kept against the size of the file, so the notice cannot mean "the cap
     // is larger than this file", which is the common case.
@@ -198,6 +210,19 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    */
   createEffect(() => {
     scroll()
+    // Read for the dependency, never for the value. A resize changes how many
+    // lines the window holds and where its last line ends, so leaving `height`
+    // out would mean the rows rebuild on a scroll and never on a resize --
+    // which is the shape of the bug this repo has already paid for twice, where
+    // something changed underneath and nothing on screen moved.
+    //
+    // This is the one line in the effect no test can fail today: `height` is a
+    // plain number prop and the stub's props object is not signal-backed, so
+    // nothing a test does makes this read reactive. That gap closes in Task 5,
+    // which is to source the height from a signal -- under babel-preset-solid
+    // the JSX getter then becomes real and a test can drive it. No test is
+    // written against it in the meantime, because one that cannot fail would be
+    // worse than none: it would read as coverage of a line nothing exercises.
     props.height
     context.renderer.requestRender()
   })
@@ -213,6 +238,22 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * nested `<text>`s: OpenTUI's TextNodeRenderable accepts strings,
    * TextNodeRenderables and StyledText, so a nested `<text>` throws where a
    * span does not.
+   *
+   * The rows are a plain `.map()` inside the root's children rather than a
+   * `<For>`, and the kind switch is a ternary rather than a `<Show>`. The test
+   * reason is first and sufficient: `scripts/test-stubs.ts` stubs both as
+   * `() => null`, and a capitalised JSX tag compiles to `createComponent(Show,
+   * props)`, which the stub records without ever calling it -- so rows built
+   * inside one are absent from `props.children` and no test can find them.
+   *
+   * The reactivity is a different question from the choice of element, and it is
+   * worth being precise because `FileTree` looks like the counter-example. Its
+   * `TreeRows` sits behind a keyed `<Show>`, so its rows are rebuilt by REMOUNT.
+   * These are not: babel-preset-solid compiles the ternary and the `.map()` into
+   * a single `insert(el, <accessor>, null)`, and it is the reconciler re-calling
+   * that accessor on every change to what it reads -- `scroll()` and `props.height`
+   * through `rows()`. So the two components have a consistent shape driven by
+   * two different mechanisms, and only `FileTree`'s has been run in a real host.
    */
   const renderRow = (row: Row) => (
     <text wrapMode="none" truncate>
