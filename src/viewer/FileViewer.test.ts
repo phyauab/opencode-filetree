@@ -495,3 +495,71 @@ describe("a markdown file", () => {
     expect(headerOf(element)).toContain(`first ${MAX_VIEW_LINES} lines`)
   })
 })
+
+/*
+ * The writer handed out on mount, and the split the markdown branch puts in it.
+ *
+ * The plugin holds this writer for the whole time the viewer is open, so it is
+ * the only channel the arrow keys have. Which writer it gets is therefore the
+ * whole of the markdown path's scrolling: hand the keymap the signal writer on
+ * a `.md` file and every press moves a number nothing reads.
+ */
+describe("the writer handed to the keymap", () => {
+  it("hands the markdown path a writer that drives the scrollbox", () => {
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const renderer = createMockRenderer()
+    let writer: any
+    const element = mount(path, 5, renderer, {
+      theme: mdTheme,
+      scrollTo: (fn: any) => (writer = fn),
+    })
+
+    // A stand-in for the ScrollBoxRenderable, handed over the way the reconciler
+    // hands a ref. `scrollTop` is the source of truth the adapter reads.
+    const scrolled: number[] = []
+    const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+    box.props.ref({ scrollTop: 7, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
+    const framesBefore = renderer.frames()
+
+    // The plugin always calls with an updater over the previous position, which is
+    // what scrollByLine produces.
+    writer((prev: number) => prev + 1)
+
+    expect(scrolled).toEqual([8])
+    expect(renderer.frames()).toBeGreaterThan(framesBefore)
+  })
+
+  it("clamps the markdown scroll against the scrollbox's own maximum", () => {
+    // The sentinel line count handed to the keymap cannot clamp, so this side has
+    // to -- otherwise the bottom of a long file is unreachable.
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    let writer: any
+    const element = mount(path, 5, createMockRenderer(), {
+      theme: mdTheme,
+      scrollTo: (fn: any) => (writer = fn),
+    })
+    const scrolled: number[] = []
+    const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+    box.props.ref({ scrollTop: 100, maxScrollTop: 100, scrollTo: (n: number) => scrolled.push(n) })
+
+    writer((prev: number) => prev + 1)
+
+    expect(scrolled).toEqual([100])
+  })
+
+  it("still hands the text path its own offset signal", () => {
+    // The markdown branch must not steal the Prism path's writer. The offset is not
+    // readable back out of the stub's static description, so this asserts the
+    // writer really is the component's signal by watching it ask for a frame --
+    // which is the only observable effect the component's own scroll has.
+    const path = makeFile("a.ts", "const a = 1\nconst b = 2\n")
+    const renderer = createMockRenderer()
+    let writer: any
+    mount(path, 5, renderer, { scrollTo: (fn: any) => (writer = fn) })
+    const before = renderer.frames()
+
+    writer((prev: number) => prev + 1)
+
+    expect(renderer.frames()).toBeGreaterThan(before)
+  })
+})

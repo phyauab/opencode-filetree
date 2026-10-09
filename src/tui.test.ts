@@ -46,6 +46,21 @@ const realFile = (lines: number): string => {
   return path
 }
 
+/**
+ * A real markdown file with `lines` lines of it.
+ *
+ * Separate from `realFile` because the extension is the whole test: it is what
+ * routes the file down the preview path, and a `.ts` file with the same contents
+ * would take the Prism path and prove nothing about the sentinel.
+ */
+const realMarkdown = (lines: number): string => {
+  const dir = mkdtempSync(join(tmpdir(), "tui-viewer-"))
+  const path = join(dir, "f.md")
+  writeFileSync(path, `${Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join("\n")}\n`)
+  created.push(dir)
+  return path
+}
+
 /** Captures what the plugin registers, and lets a test make calls fail. */
 function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: boolean } = {}) {
   const slots: { claim: any }[] = []
@@ -154,7 +169,7 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
     },
     storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
     data: { on: () => () => {}, listen: () => {} },
-    theme: {},
+    theme: { markdown: { heading: "#e06c75" } },
     /**
      * The tree's repaint effect asks for a frame on mount, so a full renderer
      * stand-in is needed once the component actually runs rather than just being
@@ -954,6 +969,25 @@ describe("plugin entry (sidebar spike)", () => {
     // that swapped one for the other slipped through the original report's
     // claim that the clamp was pinned.
     expect(viewer.written).toEqual([0, 0])
+  })
+
+  itRender("keeps scrolling a markdown file past its line count", async () => {
+    // Markdown renders as blocks, so its rendered height is not its line count.
+    // Handing the keymap the file's line count would clamp `down` at maxScroll(3, rows)
+    // on a three-line markdown file that renders thirty rows, and the reader could
+    // never reach the bottom. The sentinel defers the clamp to the scrollbox.
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.md", path: realMarkdown(3), isDirectory: false }])
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    const { written } = m.viewerOffsets()
+    const down = m.command("filetree.viewer.down")
+    for (let i = 0; i < 10; i++) down?.run?.()
+    expect(written[written.length - 1]).toBe(10)
   })
 
   itRender("up from the first line stays on the first line", async () => {

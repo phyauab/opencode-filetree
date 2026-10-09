@@ -6,6 +6,7 @@ import { createTreeState } from "./store"
 import { createTreeCommands, promptSession } from "./commands"
 import type { DirEntry } from "./fileSystem"
 import { FileViewer, VIEWER_ROWS_CHROME } from "./viewer/FileViewer"
+import { isMarkdown } from "./viewer/markdown"
 import { readForView } from "./viewer/readForView"
 import { scrollByLine, scrollByPage } from "./viewer/scroll"
 import { trace } from "./trace"
@@ -77,7 +78,13 @@ export default Plugin.define({
     const [viewerOpen, setViewerOpen] = createSignal(false)
     const [viewerPath, setViewerPath] = createSignal<string | undefined>(undefined)
     /**
-     * Lines in the file on screen, or 0 when there are none to scroll through.
+     * The line bound the viewer's keys clamp against, or 0 when there are none to
+     * scroll through.
+     *
+     * Markdown is the one value that is not a line count: `openViewer` hands the
+     * keymap a sentinel there, because the preview's rendered height is not its
+     * line count and the scrollbox's own adapter does the clamping instead.
+     *
      * Read again here rather than taken from the viewer, which hands over only
      * its writer; see the comment on `openViewer` for why a second read is the
      * cheaper of the two options.
@@ -96,9 +103,10 @@ export default Plugin.define({
      * error.
      *
      * Nothing re-clamps on the way in. `scrollByLine`/`scrollByPage` bound the
-     * step against the line count and row count, and the viewer's `offset()`
-     * clamps every read of the offset, so no value written from here can put
-     * the window outside the file.
+     * step against the line count and row count, the viewer's `offset()` clamps
+     * every read of the offset on the Prism path, and on the markdown path the
+     * writer handed over instead clamps against the scrollbox's own maximum -- so
+     * no value written from here can put the window outside the file.
      */
     let setViewerScroll: Setter<number> | undefined
 
@@ -189,7 +197,25 @@ export default Plugin.define({
       setViewerOpen(false)
       setViewerScroll = undefined
       setViewerPath(entry.path)
-      setViewerLines(file.kind === "text" ? file.totalLines : 0)
+      /*
+       * Markdown renders as blocks, so its rendered height is not its line count
+       * and is not known until the renderable has laid out: a wrapped paragraph
+       * is one line of the file and several rows of the panel, and a fenced block
+       * adds more. Handing the keymap the line count therefore clamps `down` at
+       * maxScroll(lines, rows), which for any file shorter than the panel is 0 --
+       * the reader could never reach the bottom of a three-line markdown file
+       * that renders thirty rows. The sentinel keeps that clamp from binding at
+       * all and leaves the real one to the scrollbox's own adapter, which knows
+       * `maxScrollTop` after it has laid out.
+       *
+       * The sentinel is the largest safe integer rather than a generous guess,
+       * because a guess is a number a long file can exceed: 100000 would clip a
+       * 500-line markdown file exactly the way the line count clips a short one,
+       * and it would clip it silently, which is worse. The cost of the real
+       * sentinel is one comparison in a clamp that runs on a keypress.
+       */
+      const rendered = file.kind === "text" ? file.totalLines : 0
+      setViewerLines(isMarkdown(entry.path) && file.kind === "text" ? Number.MAX_SAFE_INTEGER : rendered)
       context.ui.panel.close()
       // Fullscreen so the viewer covers the main area rather than sitting in a
       // side column. Easily reverted: drop the second argument.

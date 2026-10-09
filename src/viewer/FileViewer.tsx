@@ -200,6 +200,39 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   }
 
   /*
+   * The writer the markdown path hands the keymap, in place of the signal's.
+   *
+   * The plugin never says where to go, only how far: it hands an updater over a
+   * previous position, and the scrollbox is the source of truth for what that
+   * previous position is -- `scrollTop`, not a number any other side holds. The
+   * signal writer cannot serve here because nothing on this path reads the
+   * signal: the offset lives in the renderable, which does its own scrolling,
+   * and a signal nobody reads moves nothing.
+   *
+   * The clamp is this side's because it is the only one that knows the rendered
+   * height. `openViewer` in `tui.tsx` hands the keymap a line count that
+   * deliberately cannot clamp, so `scrollByLine` will keep asking for one more
+   * row than there is; left unclamped the bottom of a long file would be
+   * unreachable, and overshooting it would leave the panel blank. `box.maxScrollTop`
+   * is the renderable's own answer, computed after it laid out.
+   */
+  const markdownScroll: Setter<number> = (value) => {
+    const box = markdownBox as
+      | { scrollTop: number; maxScrollTop: number; scrollTo(n: number): void }
+      | undefined
+    if (!box) return 0
+    const updater = typeof value === "function" ? value : () => value
+    const next = updater(box.scrollTop)
+    box.scrollTo(Math.max(0, Math.min(next, box.maxScrollTop)))
+    // The repaint effect above reads the signal and `height`, and neither of
+    // them moved: the scrollbox did. The renderer is demand-driven, so this is
+    // the only thing that will ask for the frame that shows the result -- the
+    // stale-panel bug this repo has paid for four times.
+    context.renderer.requestRender()
+    return next
+  }
+
+  /*
    * The offset is a signal rather than a prop because nothing above the panel
    * knows or cares where in the file the reader is: it is display state, and
    * the panel's business is to stay ignorant of it.
@@ -254,16 +287,27 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const gutterWidth = String(lines.length).length
 
   /*
-   * Hands the keymap the signal's own writer rather than a value, so the plugin
-   * can move the offset from outside without holding one.
+   * Hands the keymap the writer for whichever scrolling this path owns, rather
+   * than a value, so the plugin can move it from outside without holding one.
    *
-   * Nothing is clamped on the way in, and nothing has to be: every read of the
-   * offset goes through `offset()` above, which clamps, so no value a caller
+   * Two writers, because there are two kinds of scrolling and only one of them
+   * is a signal. The Prism path moves the offset every row reads through
+   * `offset()`; the markdown path moves the scrollbox, which owns its own. One
+   * call cannot serve both, and the branch has to be here rather than in the
+   * caller because `markdown` is a fact about the file only this component has.
+   *
+   * Nothing is clamped on the signal side, and nothing has to be: every read of
+   * the offset goes through `offset()` above, which clamps, so no value a caller
    * writes -- a runaway, a negative, one left over from a taller panel -- can
    * put the window outside the file. The plugin's `scrollByLine`/`scrollByPage`
-   * clamp as well, so the next keypress puts a legal value back.
+   * clamp as well, so the next keypress puts a legal value back. The markdown
+   * side clamps itself, for the reason its own adapter gives.
    */
-  props.scrollTo?.(setScroll)
+  if (markdown) {
+    props.scrollTo?.(markdownScroll)
+  } else {
+    props.scrollTo?.(setScroll)
+  }
 
   /*
    * The repaint. OpenTUI's renderer is demand-driven: it paints a frame when
