@@ -160,6 +160,43 @@ mock.module("@opentui/solid/jsx-dev-runtime", () => ({
   createComponent: (comp: unknown, props: Record<string, unknown>) => ({ comp, props }),
 }))
 
+/**
+ * The host's `SyntaxStyle.create()` allocates a native handle on every call, and
+ * `fromTheme` builds on top of it, so neither is a singleton. This stub hands
+ * back one shared object instead, and that is the single deliberate difference
+ * from the real API: the tests assert the empty-theme fallback by identity --
+ * `toBe(SyntaxStyle.create())` compares what `buildSyntaxStyle` returned against
+ * a second, separate call -- and a factory that built a new object each time
+ * would fail them for a reason that has nothing to do with the theme mapping.
+ * Value equality is what those assertions mean, and a shared object is the
+ * cheapest way to let identity stand in for it. Every other member returns a
+ * fresh object, as the real ones do.
+ */
+const emptySyntaxStyle = { __stub: "SyntaxStyle.create", scopes: [] as unknown[] }
+
+/**
+ * `@opentui/core`, for the markdown preview.
+ *
+ * The real package loads a native render library over FFI, which a unit test has
+ * no business doing, and the plugin is never supposed to ship its own copy. This
+ * stands in for exactly the three members the viewer calls.
+ *
+ * `fromTheme` records the scope list it was handed rather than interpreting it,
+ * which is what lets a test assert the theme→scope mapping without a renderer.
+ *
+ * Nothing else in the suite imports this module yet, so a member the markdown
+ * viewer does not reach was left out rather than guessed at: `SyntaxStyle` has a
+ * dozen more methods and the renderables are a whole tree, none of which a unit
+ * test here can exercise without a real renderer.
+ */
+mock.module("@opentui/core", () => ({
+  SyntaxStyle: {
+    fromTheme: (scopes: unknown[]) => ({ __stub: "SyntaxStyle.fromTheme", scopes }),
+    create: () => emptySyntaxStyle,
+  },
+  getTreeSitterClient: () => ({ __stub: "TreeSitterClient" }),
+}))
+
 /** Runs and clears the callbacks `onCleanup` collected during a test. */
 export function runCleanups(): void {
   while (cleanupCallbacks.length > 0) {
