@@ -30,52 +30,51 @@ export type HighlightSpan = { text: string; color?: string }
 export type HighlightedLine = HighlightSpan[]
 
 /**
- * Prism token type to an OpenTUI colour name.
+ * Prism token type to an OpenTUI colour, using the One Dark palette.
+ *
+ * One Dark is a widely-used dark theme (VS Code, Atom, etc.) with these
+ * canonical colours: comments `#5c6370`, keywords `#c678dd`, strings
+ * `#98c379`, numbers/booleans/constants `#d19a66`, functions `#61afef`,
+ * class names `#e5c07b`, operators `#56b6c2`, punctuation `#abb2bf`.
  *
  * `undefined` is a deliberate value, not an omission: it means "render in the
- * theme's default colour", and it is what leaves operators and punctuation
- * reading as ordinary text rather than picking a colour the host theme may not
- * have. The names are OpenTUI's, so the viewer matches the rest of the plugin
- * and the host's palette without a theme lookup here.
+ * theme's default colour". OpenTUI's `parseColor` accepts CSS colour names and
+ * hex, so the hex values here are passed through directly.
  *
  * Typed `string | undefined` rather than the `Record<string, string>` first
  * drafted, because under `strict` that rejects the `undefined` entries that
  * give this table its meaning.
  */
 const TOKEN_COLORS: Record<string, string | undefined> = {
-  comment: "dim",
-  prolog: "dim",
-  doctype: "dim",
+  comment: "#5c6370",
+  prolog: "#5c6370",
+  doctype: "#5c6370",
 
-  keyword: "magenta",
-  "control-keyword": "magenta",
+  keyword: "#c678dd",
+  "control-keyword": "#c678dd",
 
-  string: "green",
-  // The grammars below emit these instead of `string`. Without them a Python
-  // triple-quoted string -- which is exactly the multi-line token that has to
-  // be split per line -- would be the one string left uncoloured.
-  "triple-quoted-string": "green",
-  "template-string": "green",
-  char: "green",
-  // Reached through markdown's `code-snippet` token, whose alias list is
-  // ["code", "keyword"]; see colorFor.
-  code: "green",
-  "code-snippet": "green",
+  string: "#98c379",
+  "triple-quoted-string": "#98c379",
+  "template-string": "#98c379",
+  char: "#98c379",
+  code: "#98c379",
+  "code-snippet": "#98c379",
 
-  number: "yellow",
-  boolean: "yellow",
-  constant: "yellow",
+  number: "#d19a66",
+  boolean: "#d19a66",
+  constant: "#d19a66",
 
-  function: "cyan",
-  // A class or type name is the most visually distinct thing in a TypeScript
-  // file, and Prism emits it as a *nested* token whose own content is plain
-  // text -- without this the name renders unstyled. See the `inherited`
-  // argument in collect.
-  "class-name": "cyan",
-  "maybe-class-name": "cyan",
-  "function-variable": "cyan",
-  builtin: "cyan",
+  function: "#61afef",
+  "class-name": "#e5c07b",
+  "maybe-class-name": "#e5c07b",
+  "function-variable": "#61afef",
+  builtin: "#61afef",
 
+  // Operators and punctuation stay at the theme default. One Dark gives them
+  // #56b6c2 and #abb2bf, but the host theme may not have those colours, and
+  // the original design decision was to let them render as ordinary text.
+  // The tests that pin "nested operators and punctuation keep the theme
+  // default" depend on this.
   operator: undefined,
   punctuation: undefined,
 }

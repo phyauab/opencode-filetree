@@ -172,7 +172,7 @@ describe("FileViewer", () => {
     const element = mount(path, 5)
 
     expect(rowsOf(element)).toEqual(["1 │ const value = 1"])
-    expect(codeColorsOf(element)).toContain("magenta")
+    expect(codeColorsOf(element)).toContain("#c678dd")
   })
 
   it("gives an uncoloured piece no style key at all, not an explicit undefined", () => {

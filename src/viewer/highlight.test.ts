@@ -78,8 +78,8 @@ describe("highlightLines across a token that spans lines", () => {
   it("splits a two-line block comment into one dim span per line", () => {
     const lines = highlightLines("/* one\n   two */\nconst a = 1", "typescript")
     expect(lines).toHaveLength(3)
-    expect(lines[0]).toEqual([{ text: "/* one", color: "dim" }])
-    expect(lines[1]).toEqual([{ text: "   two */", color: "dim" }])
+    expect(lines[0]).toEqual([{ text: "/* one", color: "#5c6370" }])
+    expect(lines[1]).toEqual([{ text: "   two */", color: "#5c6370" }])
     // The line after the comment still starts at the right offset, which is
     // what proves the split did not swallow or duplicate the text.
     expect(lines[2]!.map((s) => s.text).join("")).toBe("const a = 1")
@@ -88,21 +88,21 @@ describe("highlightLines across a token that spans lines", () => {
   it("splits a python triple-quoted string", () => {
     const lines = highlightLines('x = """a\nb"""\ny = 1', "python")
     expect(lines).toHaveLength(3)
-    expect(lines[0]!.find((s) => s.text === '"""a')?.color).toBe("green")
-    expect(lines[1]).toEqual([{ text: 'b"""', color: "green" }])
+    expect(lines[0]!.find((s) => s.text === '"""a')?.color).toBe("#98c379")
+    expect(lines[1]).toEqual([{ text: 'b"""', color: "#98c379" }])
   })
 
   it("splits a template literal", () => {
     const lines = highlightLines("const s = `a\nb`;\nconst z = 2", "typescript")
     expect(lines).toHaveLength(3)
-    expect(lines[0]!.filter((s) => s.color === "green").map((s) => s.text).join("")).toBe("`a")
-    expect(lines[1]!.filter((s) => s.color === "green").map((s) => s.text).join("")).toBe("b`")
+    expect(lines[0]!.filter((s) => s.color === "#98c379").map((s) => s.text).join("")).toBe("`a")
+    expect(lines[1]!.filter((s) => s.color === "#98c379").map((s) => s.text).join("")).toBe("b`")
   })
 
   it("gives every line of a multi-line token the same colour", () => {
     const lines = highlightLines("/* a\nb\nc\nd */", "typescript")
     expect(lines).toHaveLength(4)
-    for (const line of lines) expect(line).toEqual([{ text: expect.any(String), color: "dim" }])
+    for (const line of lines) expect(line).toEqual([{ text: expect.any(String), color: "#5c6370" }])
   })
 
   // The general invariant behind the cases above: nothing is dropped and
@@ -170,17 +170,18 @@ describe("grammar registration", () => {
 
   it("colours a class name, which Prism emits as a nested plain token", () => {
     // TypeScript's class-name token holds an untyped string in an array, so
-    // this only stays cyan if the enclosing token's colour is inherited down.
+    // this only stays the class-name colour if the enclosing token's colour is
+    // inherited down.
     const lines = highlightLines("class Foo extends Bar {}", "typescript")
-    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("cyan")
-    expect(lines[0]!.find((s) => s.text === "Bar")?.color).toBe("cyan")
+    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("#e5c07b")
+    expect(lines[0]!.find((s) => s.text === "Bar")?.color).toBe("#e5c07b")
   })
 
   it("colours markdown inline code through its own mapping", () => {
     // `code-snippet` is a key in TOKEN_COLORS in its own right, so this resolves
     // directly and never reaches the alias branch.
     const lines = highlightLines("some `code` text", "markdown")
-    expect(lines[0]!.find((s) => s.text === "`code`")?.color).toBe("green")
+    expect(lines[0]!.find((s) => s.text === "`code`")?.color).toBe("#98c379")
   })
 
   // The alias branch is live for types the table does not carry. `generic` is
@@ -188,8 +189,8 @@ describe("grammar registration", () => {
   // cyan. A direct-lookup-only implementation leaves the whole generic plain.
   it("resolves an aliased token type the table does not carry", () => {
     const lines = highlightLines("Foo<T>()", "typescript")
-    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("cyan")
-    expect(lines[0]!.find((s) => s.text === "T")?.color).toBe("yellow")
+    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("#61afef")
+    expect(lines[0]!.find((s) => s.text === "T")?.color).toBe("#d19a66")
   })
 
   it("resolves a single-string alias to its colour", () => {
@@ -199,7 +200,7 @@ describe("grammar registration", () => {
     const lines = highlightLines("const s = `x`", "typescript")
     const backticks = lines[0]!.filter((s) => s.text === "`")
     expect(backticks).toHaveLength(2)
-    for (const tick of backticks) expect(tick.color).toBe("green")
+    for (const tick of backticks) expect(tick.color).toBe("#98c379")
   })
 })
 
@@ -212,7 +213,7 @@ describe("nested operators and punctuation keep the theme default", () => {
     // Only the `+` inside `${...}` is a separate operator token; the one in
     // "a + " is part of the surrounding string literal and is green as text.
     const lines = highlightLines("const s = `a + ${b + c}`", "typescript")
-    expect(lines[0]!.find((s) => s.text.includes("a + "))?.color).toBe("green")
+    expect(lines[0]!.find((s) => s.text.includes("a + "))?.color).toBe("#98c379")
     const plus = lines[0]!.filter((s) => s.text === "+")
     expect(plus).toHaveLength(1)
     // Inheriting from the enclosing token rendered this green as part of the
@@ -243,6 +244,6 @@ describe("nested operators and punctuation keep the theme default", () => {
     // The other half of the distinction: an unmapped nested token does inherit,
     // which is what keeps `class Foo` colouring the name cyan.
     const lines = highlightLines("class Foo {}", "typescript")
-    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("cyan")
+    expect(lines[0]!.find((s) => s.text === "Foo")?.color).toBe("#e5c07b")
   })
 })
