@@ -138,18 +138,11 @@ JavaScript that the plugin may carry, while those two must be the host's.
 ## Panel width
 
 The tree lives in the session sidebar, and the file viewer claims the session
-panel -- a different surface, opened on `enter`. The panel opens in the host's
-right pane, which defaults to half the session width. The host owns that width
-??no plugin API can set it ??but it is easy to change by hand:
-
-- **Drag the panel's left edge** left or right. There is a resize handle on the
-  border as soon as the panel is open.
-- The width you choose **persists** across restarts, so this is a one-time
-  adjustment.
-- **Double-click the edge** to reset it back to the half-width default.
-
-Dragging it left to roughly 42 columns matches the session-list sidebar on the
-left and leaves the conversation most of the screen.
+panel -- a different surface, opened on `enter`. The viewer opens in the host's
+fullscreen presentation, so it takes the whole session area: there is no width
+for the plugin to set and none for the reader to adjust, and the drag-and-reset
+advice that applied to the half-width pane no longer applies. The host owns the
+sizing of both surfaces; no plugin API can change either.
 
 ## Why a panel and not the sidebar
 
