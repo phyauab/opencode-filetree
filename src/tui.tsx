@@ -22,6 +22,9 @@ import { trace } from "./trace"
 /** The name the viewer claims `session.panel` under. */
 const VIEWER_PANEL = "filetree.viewer"
 
+/** Plugin option key for the viewer's maximum content width. */
+const VIEWER_WIDTH_OPTION = "viewerWidth"
+
 /** Minimal shape of the tree's root renderable, for focus gating. */
 type TreeRoot = {
   focus(): void
@@ -125,6 +128,38 @@ export default Plugin.define({
     )
     const viewerHeight = () => Math.max(1, terminalHeight() - VIEWER_ROWS_CHROME)
 
+    /**
+     * The viewer's maximum content width, stored as a signal so the viewer
+     * reactively re-renders when it changes.
+     *
+     * Initialised from plugin options (`opencode.json`), then overridable at
+     * runtime via the `filetree.set-width` command. Persisted to storage so
+     * the choice survives restarts.
+     */
+    const [viewerMaxWidth, setViewerMaxWidth] = createSignal<number | undefined>(
+      typeof context.options[VIEWER_WIDTH_OPTION] === "number" && context.options[VIEWER_WIDTH_OPTION] > 0
+        ? context.options[VIEWER_WIDTH_OPTION]
+        : undefined,
+    )
+
+    // Persisted width storage — loaded once at startup, saved on every change.
+    const [widthStore, setWidthStore] = context.storage.store<{ width: number }>("filetree-viewer-width", {
+      initial: { width: 0 },
+    })
+
+    // Load persisted width from storage on startup.
+    const persisted = widthStore.width
+    if (typeof persisted === "number" && persisted > 0) {
+      setViewerMaxWidth(persisted)
+    }
+
+    /** Persist the width to storage so it survives restarts. */
+    const persistViewerWidth = (width: number) => {
+      void setWidthStore((draft) => {
+        draft.width = width
+      })
+    }
+
     const measureTerminal = () => {
       const next = context.renderer?.height
       if (typeof next === "number" && next > 0) setTerminalHeight(next)
@@ -217,8 +252,9 @@ export default Plugin.define({
       const rendered = file.kind === "text" ? file.totalLines : 0
       setViewerLines(isMarkdown(entry.path) && file.kind === "text" ? Number.MAX_SAFE_INTEGER : rendered)
       context.ui.panel.close()
-      // Fullscreen so the viewer covers the main area rather than sitting in a
-      // side column. Easily reverted: drop the second argument.
+      // Fullscreen so the viewer covers the main area and overlays the chat.
+      // The content is centered within the screen by FileViewer's
+      // MAX_CONTENT_WIDTH constraint.
       setViewerOpen(context.ui.panel.open(VIEWER_PANEL, { presentation: "fullscreen" }))
       // The sentinel is not a line count, and a trace that logs 9007199254740991
       // under a field called `lines` invites whoever reads it to take it for one
@@ -377,6 +413,7 @@ export default Plugin.define({
           <FileViewer
             path={path}
             height={viewerHeight()}
+            maxWidth={viewerMaxWidth()}
             context={context}
             // The viewer's own writer, held so the keymap can move the offset
             // without owning it. Reset on every open so a keypress can never
@@ -455,8 +492,33 @@ export default Plugin.define({
               bind: "ctrl+y",
               run: focusTheTree,
             },
+            {
+              id: "filetree.set-width",
+              title: "File tree: set viewer width",
+              group: "File tree",
+              palette: true,
+              run: () => {
+                void context.ui.dialog
+                  .prompt({
+                    title: "Viewer width",
+                    description: "Maximum content width in terminal columns",
+                    value: String(viewerMaxWidth() ?? 150),
+                  })
+                  .then((result) => {
+                    if (result === undefined) return
+                    const width = Number(result)
+                    if (!Number.isFinite(width) || width <= 0) {
+                      notify("Width must be a positive number", "error")
+                      return
+                    }
+                    setViewerMaxWidth(width)
+                    persistViewerWidth(width)
+                    notify(`Viewer width set to ${width}`, "info")
+                  })
+              },
+            },
           ],
-          bindings: ["filetree.focus"],
+          bindings: ["filetree.focus", "filetree.set-width"],
         }
       })
       trace("layer.registered", { layer: "focus" })

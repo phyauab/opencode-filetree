@@ -17,10 +17,15 @@ import { maxScroll } from "./scroll"
  */
 export const VIEWER_ROWS_CHROME = 2
 
+/** Default maximum width of the viewer content, in terminal columns. */
+const DEFAULT_MAX_WIDTH = 150
+
 export type FileViewerProps = {
   path: string
   /** Rows available for content, after the panel has taken its chrome off. */
   height: number
+  /** Maximum content width in terminal columns. Defaults to DEFAULT_MAX_WIDTH. */
+  maxWidth?: number
   /**
    * The plugin context, passed down by the plugin entry rather than read with
    * `usePlugin()`. Reading it from our own copy of `@opencode/plugin/tui`
@@ -465,29 +470,33 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      * Either alone fixes it; both state the invariant from both ends.
      */
     return (
-      <box flexDirection="column" height={props.height}>
-        <text fg="dim" wrapMode="none" truncate flexShrink={0}>
-          {markdownHeader(file, props.path)}
-        </text>
-        <scrollbox flexGrow={1} flexBasis={0} ref={captureMarkdownBox}>
-          <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />
-        </scrollbox>
+      <box flexDirection="row" justifyContent="center">
+        <box flexDirection="column" maxWidth={props.maxWidth ?? DEFAULT_MAX_WIDTH} height={props.height}>
+          <text fg="dim" wrapMode="none" truncate flexShrink={0}>
+            {markdownHeader(file, props.path)}
+          </text>
+          <scrollbox flexGrow={1} flexBasis={0} ref={captureMarkdownBox}>
+            <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />
+          </scrollbox>
+        </box>
       </box>
     )
   }
 
   return (
-    <box flexDirection="column">
-      <text fg="dim" wrapMode="none" truncate>
-        {header()}
-      </text>
-      {file.kind === "text" ? (
-        rows().map(renderRow)
-      ) : (
+    <box flexDirection="row" justifyContent="center">
+      <box flexDirection="column" maxWidth={props.maxWidth ?? DEFAULT_MAX_WIDTH}>
         <text fg="dim" wrapMode="none" truncate>
-          {messageFor(file)}
+          {header()}
         </text>
-      )}
+        {file.kind === "text" ? (
+          rows().map(renderRow)
+        ) : (
+          <text fg="dim" wrapMode="none" truncate>
+            {messageFor(file)}
+          </text>
+        )}
+      </box>
     </box>
   )
 }
