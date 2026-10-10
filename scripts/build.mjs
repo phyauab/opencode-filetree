@@ -49,6 +49,11 @@ for (const file of await walk(src)) {
   // build never emitted them, and shipping them would put bun:test in dist.
   if (!/\.[cm]?[jt]sx?$/.test(file)) continue
   if (/\.test\.[cm]?[jt]sx?$/.test(file)) continue
+  // Declaration files are types and nothing else. Babel erases them to an empty
+  // module, so building one ships a 0-byte file in dist that nothing can import
+  // and that tsc will not emit either -- src/types/prismjs.d.ts is for the
+  // type checker alone.
+  if (/\.d\.[cm]?ts$/.test(file)) continue
   const code = await readFile(file, "utf8")
   const result = await transformAsync(code, {
     filename: file,

@@ -10,6 +10,7 @@ import { TreeNode } from "./TreeNode"
 import type { TreeState } from "./store"
 import { describeEmpty, resolveDirectory, type EmptyReason } from "./emptyState"
 import { toggleExpand } from "./treeLogic"
+import { trace } from "./trace"
 
 // Pure navigation logic lives in treeLogic.ts, which imports no JSX, so it
 // stays testable without OpenCode's runtime.
@@ -27,11 +28,48 @@ type FileTreeProps = {
    * yields a different Solid context object than the host's.
    */
   context: Context
+  /**
+   * Receives the tree's root box. In the sidebar placement the keyboard is
+   * gated on that box holding focus, so the entry needs the renderable to
+   * focus it (ctrl+e), blur it (esc) and to recognise it in the focus chain.
+   */
+  onRoot?: (el: TreeRootBox) => void
+  /**
+   * Called when the user clicks the tree. Claims the navigation keys, which
+   * focus alone no longer does -- the host reclaims focus within a second, and
+   * the plugin owns that state instead (see `keysHeld` in `tui.tsx`).
+   */
+  onActivate?: () => void
+}
+
+/** The slice of the root renderable the focus gate touches. */
+export type TreeRootBox = {
+  focus(): void
+  blur(): void
+  parent?: TreeRootBox | null
 }
 
 export const FileTree: Component<FileTreeProps> = (props) => {
   const context = props.context
   const state = props.state
+
+  // TEMPORARY: proves the component body runs in the host, so a missing
+  // `root.ref` line means the renderable never mounted.
+  trace("filetree.body")
+
+  /*
+   * Names the renderable that currently holds focus, for the trace. Only the
+   * constructor name: enough to tell a host prompt editor or session list from
+   * our own box, which is all the "works once, then not" report needs.
+   */
+  const focusHolder = () => {
+    const current = context.renderer?.currentFocusedRenderable as
+      | { constructor?: { name?: string } }
+      | null
+      | undefined
+    if (!current) return "none"
+    return current.constructor?.name ?? "unknown"
+  }
 
   /** Bumped by a refresh to trigger a full re-read of the root. */
   const [reloadToken, setReloadToken] = createSignal(0)
@@ -52,6 +90,53 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   const refreshGitStatus = (dir: string) => {
     state.setGitStatusMap(getGitStatusSync(dir))
   }
+
+  /*
+   * Focus state, for feedback only.
+   *
+   * The trace of a live session settled why ctrl+y "did nothing": the command
+   * ran, the root box was captured and focusable, and `focus()` moved the
+   * renderer's focus into the tree -- twice. It was invisible. The sidebar looks
+   * identical whether the keyboard is in the tree or in the prompt, so a
+   * working shortcut read as a dead one, and no amount of keybind archaeology
+   * would have found that.
+   *
+   * Two affordances, both driven from here: the box border switches to
+   * `focusedBorderColor` on its own (BoxRenderable already repaints on
+   * focus), and the hint line appears. The hint is what makes the press
+   * unmistakable.
+   */
+  const [focused, setFocused] = createSignal(false)
+
+  /**
+   * Captures the root box for the entry's focus command and watches it for
+   * focus changes.
+   *
+   * Stable identity on purpose: the solid runtime calls `ref` inside a render
+   * effect keyed on the function itself, so a fresh closure per render would
+   * re-subscribe on every state change.
+   */
+  let watchingRoot = false
+    const captureRoot = (el: TreeRootBox) => {
+      props.onRoot?.(el)
+      const renderable = el as unknown as {
+        focused?: boolean
+        on?: (event: string, listener: () => void) => void
+      }
+      setFocused(renderable.focused === true)
+      if (watchingRoot) return
+      watchingRoot = true
+      renderable.on?.("focused", () => {
+        trace("root.focused", { holder: focusHolder() })
+        setFocused(true)
+      })
+      renderable.on?.("blurred", () => {
+        // Logged because the reported symptom -- works once, then not -- is
+        // only explicable by something taking the keyboard back. This says when.
+        trace("root.blurred", { holder: focusHolder() })
+        setFocused(false)
+      })
+    }
 
   /**
    * Reads the project root into the tree, and marks it loaded on success only.
@@ -248,6 +333,9 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     state.gitStatusMap()
     state.viewportHeight()
     empty()
+    // Focus is in the list because the hint line is drawn from it, and the
+    // renderer's own repaint on focus change cannot know about a solid signal.
+    focused()
     context.renderer.requestRender()
   })
 
@@ -295,8 +383,18 @@ export const FileTree: Component<FileTreeProps> = (props) => {
    * relative to the renderable it was dispatched on, so rows start at y 0.
    */
   const onClick = (event: { y: number }) => {
+    trace("mouse.down", { y: event?.y })
+    // A click means the user wants to drive this tree, so it claims the keys as
+    // well as selecting the row. Clicking only for focus was not enough: the
+    // host hands focus back within a second, and the nav layer no longer reads
+    // focus to decide whether it is live.
+    props.onActivate?.()
     const view = state.viewport()
-    const index = view.start + Math.max(0, event.y)
+    // The hint line owns line 0 whether or not it is showing, so a click's y
+    // maps to a row one line lower. Reserving the line always keeps every row
+    // on the same y, which is what lets a click select what it looks like it
+    // selected.
+    const index = view.start + Math.max(0, event.y - 1)
     const nodes = state.visibleNodes()
     // Bound by the rows actually rendered, not by the whole tree: the
     // "N more below" and unreadable-folder hints are drawn inside this same box,
@@ -314,7 +412,28 @@ export const FileTree: Component<FileTreeProps> = (props) => {
   }
 
   return (
-    <box focusable onMouseDown={onClick}>
+    <box
+      focusable
+      ref={captureRoot}
+      onMouseDown={onClick}
+      // A one-column left edge is the cheap half of the focus affordance: it is
+      // always there, so the eye learns where focus can land, and BoxRenderable
+      // swaps it to `focusedBorderColor` by itself. "gray" rather than "dim"
+      // because parseColor only accepts CSS color names and hex.
+      border={["left"]}
+      borderColor="gray"
+      focusedBorderColor="cyan"
+    >
+      {/*
+       * The loud half. The line is reserved whether or not it has anything to
+       * say, so focusing changes no heights and no row positions; only the text
+       * appears.
+       */}
+      <Show when={focused()} fallback={<text fg="dim">{" "}</text>}>
+        <text fg="cyan" wrapMode="none" truncate>
+          {"↑↓ move · enter open · s send · esc"}
+        </text>
+      </Show>
       <Show
         when={rows().total > 0}
         fallback={

@@ -99,7 +99,39 @@ mock.module("solid-js", () => ({
   indexArray: <T,>(list: T[]) => list.map((item, i) => [i, item] as const),
   mapArray: <T,>(list: T[], fn: (item: T, i: number) => T) => list.map(fn),
   For: () => null,
-  Show: () => null,
+  /**
+   * `<Show>`, honestly rather than as a hole.
+   *
+   * It used to be `() => null`, on the reasoning that the stub records
+   * `createComponent(Show, props)` without ever calling the component, so nothing
+   * inside a `<Show>` was reachable from a test. That reasoning was half right
+   * and it was used to justify keeping JSX out of `tui.tsx`. What actually
+   * happens is narrower: `createComponent` records the props object *uninvoked*,
+   * but it does not invoke the props getters either, so the compiled
+   * `get children()` survives intact and a test can walk it -- exactly as
+   * `FileViewer.test.ts` walks `props.children` for its rows.
+   *
+   * So the component is implemented rather than stubbed out, and both child
+   * shapes are handled: a plain child is returned as-is, and a function child is
+   * called with the `when` value, which is what `keyed` means.
+   *
+   * No test exercises this yet -- nothing invokes the component, because
+   * `createComponent` records rather than calls, and no test in the suite needs
+   * to. It was verified by a throwaway `.tsx` probe when it was written (all
+   * three shapes above, against real compiled JSX) and the probe was deleted.
+   * It is here so the next test that reaches inside a `<Show>` can rely on it
+   * rather than rediscover that the stub used to return `null`.
+   */
+  Show: (props: {
+    when?: unknown
+    keyed?: boolean
+    fallback?: unknown
+    children?: unknown
+  }) => {
+    const child = props.when ? props.children : props.fallback
+    if (typeof child === "function") return (child as (value: unknown) => unknown)(props.when)
+    return (child as unknown) ?? null
+  },
   ErrorBoundary: (props: { children?: unknown }) => props.children ?? null,
   // JSX compiles to createComponent/mergeProps. The elements are never rendered
   // in these tests; they only need to exist.
@@ -126,6 +158,72 @@ mock.module("@opentui/solid/jsx-dev-runtime", () => ({
   jsxDEV: (type: unknown, props: Record<string, unknown>) => ({ type, props }),
   Fragment: (props: Record<string, unknown>) => props,
   createComponent: (comp: unknown, props: Record<string, unknown>) => ({ comp, props }),
+}))
+
+/**
+ * How many syntax styles the stub has been asked to build.
+ *
+ * Counted across both entry points because the real `fromTheme()` begins with a
+ * `create()` of its own -- read `SyntaxStyle.fromTheme` in `@opentui/core` -- so
+ * one themed build and one empty build cost the same thing at runtime: a native
+ * handle that nothing ever calls `destroy()` on.
+ *
+ * This counter is load-bearing, not belt-and-braces. The tests below it assert
+ * the empty-theme fallback by identity against `SyntaxStyle.create()`, and the
+ * stub hands the same object back on every call, so those assertions pass
+ * whether or not `buildSyntaxStyle` memoises anything. That is how a `create()`
+ * sitting *before* the cache check -- one native handle leaked per viewer mount
+ * -- survived a full review of the identity assertions and was only caught by
+ * counting. Keep a counter test whenever a stub is shared-object by design.
+ */
+let syntaxStyleAllocationCount = 0
+
+/** The number of syntax styles the stub has built, for tests that care about cost. */
+export function syntaxStyleAllocations(): number {
+  return syntaxStyleAllocationCount
+}
+
+/**
+ * The host's `SyntaxStyle.create()` allocates a native handle on every call, and
+ * `fromTheme` builds on top of it, so neither is a singleton. This stub hands
+ * back one shared object instead, and that is the single deliberate difference
+ * from the real API: the tests assert the empty-theme fallback by identity --
+ * `toBe(SyntaxStyle.create())` compares what `buildSyntaxStyle` returned against
+ * a second, separate call -- and a factory that built a new object each time
+ * would fail them for a reason that has nothing to do with the theme mapping.
+ * Value equality is what those assertions mean; `syntaxStyleAllocations()` is
+ * what catches a memoisation regression, because identity cannot.
+ */
+const emptySyntaxStyle = { __stub: "SyntaxStyle.create", scopes: [] as unknown[] }
+
+/**
+ * `@opentui/core`, for the markdown preview.
+ *
+ * The real package loads a native render library over FFI, which a unit test has
+ * no business doing, and the plugin is never supposed to ship its own copy. This
+ * stands in for the two members the viewer calls.
+ *
+ * `fromTheme` records the scope list it was handed rather than interpreting it,
+ * which is what lets a test assert the theme→scope mapping without a renderer.
+ *
+ * `getTreeSitterClient` is deliberately absent although the plan named it for the
+ * stub: nothing in `src/` imports it, and `CodeRenderable` defaults to the
+ * process-global singleton on its own, so the plan's own decision to omit
+ * `treeSitterClient` from the `<markdown>` props means no task will call it.
+ * Nothing else in the suite imports this module either, so a member nothing
+ * reaches was left out rather than guessed at.
+ */
+mock.module("@opentui/core", () => ({
+  SyntaxStyle: {
+    fromTheme: (scopes: unknown[]) => {
+      syntaxStyleAllocationCount++
+      return { __stub: "SyntaxStyle.fromTheme", scopes }
+    },
+    create: () => {
+      syntaxStyleAllocationCount++
+      return emptySyntaxStyle
+    },
+  },
 }))
 
 /** Runs and clears the callbacks `onCleanup` collected during a test. */

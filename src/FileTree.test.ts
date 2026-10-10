@@ -252,13 +252,106 @@ describe("asking the host to repaint", () => {
   })
 })
 
+describe("showing that the tree holds the keyboard", () => {
+  /** A stand-in for the host's root box, with the focus events it emits. */
+  function fakeRoot() {
+    const listeners = new Map<string, (() => void)[]>()
+    const el: any = {
+      focused: false,
+      on(event: string, listener: () => void) {
+        const existing = listeners.get(event) ?? []
+        existing.push(listener)
+        listeners.set(event, existing)
+      },
+      emit(event: string) {
+        for (const listener of listeners.get(event) ?? []) listener()
+      },
+      listened: (event: string) => listeners.has(event),
+    }
+    return el
+  }
+
+  it("gives the box a left border that turns cyan on focus", () => {
+    // BoxRenderable draws its border in `focusedBorderColor` whenever it is
+    // focusable and focused, so these two props are the whole affordance: no
+    // signal of ours to keep in sync.
+    const root = makeProject()
+    const box = clickableBox(mountFileTree(root, createTreeState()))
+
+    expect(box.props.border).toEqual(["left"])
+    expect(box.props.focusable).toBe(true)
+    expect(box.props.focusedBorderColor).toBe("cyan")
+  })
+
+  it("asks for a frame when focus changes", () => {
+    // The host repaints a focus change of its own accord, but it cannot know
+    // about a solid signal: without this the hint line changes and nothing is
+    // drawn. This is the same lesson as the repaint effect itself.
+    const root = makeProject()
+    const state = createTreeState()
+    const renderer = createMockRenderer()
+    const box = clickableBox(mountFileTree(root, state, createMemoryStorage(), renderer))
+    const el = fakeRoot()
+
+    box.props.ref(el)
+    const before = renderer.frames()
+
+    el.emit("focused")
+    expect(renderer.frames()).toBeGreaterThan(before)
+
+    const afterFocus = renderer.frames()
+    el.emit("blurred")
+    expect(renderer.frames()).toBeGreaterThan(afterFocus)
+  })
+
+  it("subscribes to focus and blur exactly once per root", () => {
+    const root = makeProject()
+    const box = clickableBox(mountFileTree(root, createTreeState()))
+    const el = fakeRoot()
+
+    // The solid runtime calls `ref` from a render effect keyed on the function,
+    // so a fresh closure per render would re-subscribe on every state change.
+    box.props.ref(el)
+    box.props.ref(el)
+    box.props.ref(el)
+
+    expect(el.listened("focused")).toBe(true)
+    expect(el.listened("blurred")).toBe(true)
+  })
+
+  it("hands the root box to the entry so ctrl+y can focus it", () => {
+    const root = makeProject()
+    const seen: any[] = []
+    const box = clickableBox(
+      (FileTree as any)({
+        state: createTreeState(),
+        context: {
+          location: { directory: root },
+          data: { location: { default: () => ({ directory: root }) } },
+          storage: createMemoryStorage(),
+          renderer: { height: 40, requestRender: () => {} },
+          ui: { format: { path: (p: string) => p } },
+        },
+        onRoot: (el: unknown) => seen.push(el),
+      }),
+    )
+
+    const el = fakeRoot()
+    box.props.ref(el)
+
+    expect(seen).toEqual([el])
+  })
+})
+
 describe("clicking a row", () => {
   it("selects the clicked row", () => {
     const root = makeProject()
     const state = createTreeState()
     const box = clickableBox(mountFileTree(root, state))
 
-    box.props.onMouseDown({ y: 1 })
+    // Row 0 sits on line 1: line 0 belongs to the focus hint, which is blank
+    // until the tree has focus but is always reserved.
+    box.props.onMouseDown({ y: 2 })
 
     expect(state.cursor()).toBe(1)
   })
@@ -269,7 +362,7 @@ describe("clicking a row", () => {
     const box = clickableBox(mountFileTree(root, state))
 
     // Row 0 is the folder: folders sort before files.
-    box.props.onMouseDown({ y: 0 })
+    box.props.onMouseDown({ y: 1 })
 
     expect([...state.expanded()]).toEqual([join(root, "src")])
   })
@@ -279,10 +372,10 @@ describe("clicking a row", () => {
     const state = createTreeState()
     const box = clickableBox(mountFileTree(root, state))
 
-    box.props.onMouseDown({ y: 0 })
+    box.props.onMouseDown({ y: 1 })
     expect([...state.expanded()]).toEqual([join(root, "src")])
 
-    box.props.onMouseDown({ y: 0 })
+    box.props.onMouseDown({ y: 1 })
 
     expect([...state.expanded()]).toEqual([])
   })
@@ -292,7 +385,7 @@ describe("clicking a row", () => {
     const state = createTreeState()
     const box = clickableBox(mountFileTree(root, state))
 
-    box.props.onMouseDown({ y: 1 })
+    box.props.onMouseDown({ y: 2 })
 
     expect([...state.expanded()]).toEqual([])
   })
@@ -321,7 +414,9 @@ describe("clicking a row", () => {
     const view = state.viewport()
     expect(view.end).toBeLessThan(state.visibleNodes().length)
 
-    box.props.onMouseDown({ y: view.end })
+    // The hint line sits above the window, so the last hint is one line below
+    // the last row it is drawn under.
+    box.props.onMouseDown({ y: 1 + (view.end - view.start) })
 
     expect(state.cursor()).toBe(0)
     expect([...state.expanded()]).toEqual([])

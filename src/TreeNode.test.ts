@@ -17,13 +17,25 @@ const row = (props: Partial<Parameters<typeof TreeNode>[0]> = {}) =>
     isExpanded: false,
     gitStatus: undefined,
     ...props,
-  }) as unknown as { props: { fg?: string; bg?: string; children: string } }
+  }) as unknown as { props: { fg?: string; bg?: string; wrapMode?: string; truncate?: boolean; children: string } }
 
 describe("TreeNode", () => {
   it("renders the name and the git indicator as one text row", () => {
     const text = row({ gitStatus: "M" }).props.children
     expect(text).toContain("app.ts")
     expect(text).toContain("[M]")
+  })
+
+  it("carries no selection marker of its own", () => {
+    // The selection is the row's color; a `›` prefix cost two columns of a
+    // 42-column sidebar and duplicated what the highlight already shows.
+    expect(row({ isSelected: true }).props.children).not.toContain("›")
+  })
+
+  it("never wraps, truncating at the row's own width instead", () => {
+    const text = row().props
+    expect(text.wrapMode).toBe("none")
+    expect(text.truncate).toBe(true)
   })
 
   it("colors a modified row yellow", () => {

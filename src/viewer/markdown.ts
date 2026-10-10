@@ -1,0 +1,352 @@
+import { SyntaxStyle, type RGBA, type ThemeTokenStyle } from "@opentui/core"
+import { languageFor } from "./highlight"
+
+/**
+ * Markdown support for the viewer: which files it renders as markdown, and the
+ * colours it renders them in.
+ *
+ * This lives beside `highlight.ts` rather than inside it because the two answer
+ * different questions. `highlight.ts` owns Prism: it tokenizes a code file into
+ * coloured spans, one list per line. A markdown file instead goes to
+ * `MarkdownRenderable`, which parses and lays out its own blocks and asks only
+ * for a `SyntaxStyle` -- so the colours come from the host theme here rather
+ * than from a hardcoded palette like `TOKEN_COLORS`. Anyone looking for the one
+ * place that decides "what colour is this token" will find two, and that is the
+ * point: the Prism path is a fixed palette, this one follows the theme the user
+ * is running, which is what makes a preview look like the host's own markdown
+ * instead of a second opinion about it.
+ */
+
+/**
+ * The subset of `ctx.theme` this feature reads.
+ *
+ * `ctx.theme` is a `ResolvedTheme` (`@opencode/theme/tui`), and every colour in
+ * one is an `RGBA` from `@opentui/core` -- `text.base`, each `syntax` token,
+ * each `markdown` token, `background.base`. The names are the theme schema's
+ * own (`SyntaxToken`, `MarkdownToken`); `RGBA` is the one type this module
+ * already shares with `@opentui/core`, which is why only the shape is declared
+ * here rather than imported -- `@opencode/theme` is an optional peer this
+ * plugin must not depend on at runtime.
+ *
+ * An earlier revision declared the values as `string`, guessing that a theme
+ * carries hex. It carries `RGBA`, so the reader below -- which then accepted
+ * only strings -- read every token as absent: zero scope rows, the empty style,
+ * and a white `.md` preview in the live host, with the whole suite green
+ * against the guess. That is the second fake-shaped bug this viewer has
+ * shipped (the first clamped markdown scrolling against a `maxScrollTop` the
+ * renderable does not have), and it has the same lesson: the host's real shape
+ * is the only shape worth writing down.
+ */
+export type MarkdownTheme = {
+  text?: {
+    base?: RGBA
+    muted?: RGBA
+    /** The feedback colours, for the scopes only a fenced block can produce. */
+    feedback?: Partial<Record<"error" | "warning", { base?: RGBA }>>
+  }
+  syntax?: Partial<Record<"comment" | "keyword" | "function" | "variable" | "string" | "number" | "type" | "operator" | "punctuation", RGBA>>
+  markdown?: Partial<Record<"heading" | "strong" | "emphasis" | "code" | "blockQuote" | "link" | "linkText" | "listItem", RGBA>>
+  // Declared because the host's own bridge reads it for inline code: the
+  // `markup.raw.inline` row below takes its background from `background.base`
+  // and is dropped whole when the theme offers none.
+  background?: { base?: RGBA }
+}
+
+/**
+ * True for the extensions the viewer renders as markdown rather than as code.
+ *
+ * Delegates to `languageFor` rather than keeping a second list here: one owner
+ * of the extension table beats two, and the day someone adds `mdown` to
+ * `highlight.ts` this follows without being told.
+ *
+ * `.mdx` is deliberately NOT markdown. `languageFor` does not map it, and
+ * Prism's markdown grammar would mis-tokenise JSX -- an `.mdx` file opened as a
+ * preview would render its components as mangled prose. It keeps the Prism path,
+ * which shows it as the plain text it is to that grammar.
+ */
+export function isMarkdown(path: string): boolean {
+  return languageFor(path) === "markdown"
+}
+
+/**
+ * A dotted path into `MarkdownTheme`.
+ *
+ * Spelled out as a union of the whole table rather than assembled from strings,
+ * so that a typo in the mapping below -- `syntax.coment` -- is a compile error
+ * instead of a scope that silently renders in the default style for as long as
+ * it takes someone to notice.
+ */
+type TokenPath =
+  | "text.base"
+  | "text.muted"
+  | "text.feedback.error.base"
+  | "text.feedback.warning.base"
+  | "syntax.comment"
+  | "syntax.keyword"
+  | "syntax.function"
+  | "syntax.variable"
+  | "syntax.string"
+  | "syntax.number"
+  | "syntax.type"
+  | "syntax.operator"
+  | "syntax.punctuation"
+  | "markdown.heading"
+  | "markdown.strong"
+  | "markdown.emphasis"
+  | "markdown.code"
+  | "markdown.blockQuote"
+  | "markdown.link"
+  | "markdown.linkText"
+  | "markdown.listItem"
+  | "background.base"
+
+/**
+ * One theme-token to syntax-scope mapping, replicating the host's own bridge.
+ *
+ * `background` exists for the one row that needs a second token, and the rule is
+ * that every source token has to be present: a row with a missing one is skipped
+ * whole rather than half-filled. A heading that gets a colour but loses its
+ * `bold` is worse than a heading in the default style, because the user reads
+ * the loss as a bug in their theme rather than as a missing token.
+ */
+type ScopeRow = {
+  scope: readonly string[]
+  /** The token the foreground comes from. */
+  foreground: TokenPath
+  /** The token the background comes from, when the row needs one. */
+  background?: TokenPath
+  style: Omit<ThemeTokenStyle["style"], "foreground" | "background">
+}
+
+/**
+ * The host's own theme→style table, row for row.
+ *
+ * Replicated rather than designed because the point of the feature is that a
+ * `.md` file looks like every other markdown surface in the host. Scopes are
+ * Tree-sitter scope names, which is why `markup.heading.1` and `markup.heading`
+ * are separate rows: the host underlines the first heading level and merely
+ * bolds the rest, and collapsing them would take the `underline` away from `#`.
+ *
+ * One row asks for a token the recorded theme shape did not name: inline code
+ * takes its background from `background.base`. The row asks for it and is
+ * dropped whole when the host does not offer one, rather than falling back to a
+ * colour it does have -- an earlier draft substituted `text.base` and that is
+ * the host's *text* colour sitting behind its *code* colour, a bright inverted
+ * chip that no other markdown surface in the host wears. A missing background
+ * is a nicety; a wrong one is a bug report.
+ */
+const SCOPE_TABLE: readonly ScopeRow[] = [
+  { scope: ["default"], foreground: "text.base", style: {} },
+  { scope: ["comment", "comment.documentation"], foreground: "syntax.comment", style: { italic: true } },
+  { scope: ["string", "symbol", "character.special", "character"], foreground: "syntax.string", style: {} },
+  { scope: ["number", "boolean", "constant", "float"], foreground: "syntax.number", style: {} },
+  { scope: ["keyword.return", "keyword.conditional", "keyword.repeat", "keyword.coroutine"], foreground: "syntax.keyword", style: { italic: true } },
+  { scope: ["keyword.type"], foreground: "syntax.type", style: { bold: true, italic: true } },
+  { scope: ["keyword.function", "function.method"], foreground: "syntax.function", style: {} },
+  // Two rows in the host's bridge, and they were merged into one here by
+  // mistake: the merge kept the scopes and dropped the italic the host puts on
+  // a bare `keyword`, so every highlighted keyword came out upright where the
+  // host paints it italic. Split back, row for row.
+  { scope: ["keyword"], foreground: "syntax.keyword", style: { italic: true } },
+  { scope: ["keyword.import", "string.escape", "string.regexp", "tag.attribute", "keyword.export"], foreground: "syntax.keyword", style: {} },
+  { scope: ["operator", "keyword.operator", "punctuation.delimiter", "keyword.conditional.ternary"], foreground: "syntax.operator", style: {} },
+  { scope: ["variable", "variable.parameter", "function.method.call", "function.call", "property", "parameter", "field"], foreground: "syntax.variable", style: {} },
+  { scope: ["variable.member", "function", "constructor"], foreground: "syntax.function", style: {} },
+  { scope: ["type", "module", "class", "namespace"], foreground: "syntax.type", style: {} },
+  { scope: ["type.definition"], foreground: "syntax.type", style: { bold: true } },
+  { scope: ["punctuation", "punctuation.bracket"], foreground: "syntax.punctuation", style: {} },
+  /*
+   * The rows only a fenced code block can produce.
+   *
+   * A fenced block is highlighted with the host's tree-sitter scopes, so these
+   * are reachable from an ordinary `.md` file -- `Array` in a ```ts fence
+   * carries `variable.builtin`, a JSX fence carries `tag` and `attribute`, a
+   * C fence carries `keyword.directive` -- and without them all of it falls
+   * back to the default colour while the host's own preview paints it. Each is
+   * transcribed from the host's bridge, which colours the builtin family and
+   * `tag` from the error feedback and attributes from the warning one.
+   *
+   * What is deliberately absent, because this renderer never emits the scope:
+   * the host's `prompt`, `extmark.*`, `markup.underline`, `markup.list.checked`,
+   * `comment.error|warning|todo|note`, `diff.*` and `error|warning|info` rows.
+   * Those belong to the host's prompt editor, extmarks, chat and diff surfaces
+   * (grep `@opentui/core` for the group names and they do not exist), or only
+   * appear on a malformed fence. A row whose scope cannot be emitted is a row
+   * that only looks like coverage, and the first revision of this table was
+   * already one mistake of that kind.
+   */
+  { scope: ["variable.builtin", "type.builtin", "function.builtin", "module.builtin", "constant.builtin", "variable.super"], foreground: "text.feedback.error.base", style: {} },
+  { scope: ["keyword.directive", "keyword.modifier", "keyword.exception"], foreground: "syntax.keyword", style: { italic: true } },
+  { scope: ["punctuation.special", "tag.delimiter"], foreground: "syntax.operator", style: {} },
+  { scope: ["attribute", "annotation"], foreground: "text.feedback.warning.base", style: {} },
+  { scope: ["tag"], foreground: "text.feedback.error.base", style: {} },
+  { scope: ["markup.heading", "markup.heading.2", "markup.heading.3", "markup.heading.4", "markup.heading.5", "markup.heading.6"], foreground: "markdown.heading", style: { bold: true } },
+  { scope: ["markup.heading.1"], foreground: "markdown.heading", style: { bold: true, underline: true } },
+  { scope: ["markup.bold", "markup.strong"], foreground: "markdown.strong", style: { bold: true } },
+  { scope: ["markup.italic"], foreground: "markdown.emphasis", style: { italic: true } },
+  { scope: ["markup.list"], foreground: "markdown.listItem", style: {} },
+  { scope: ["markup.quote"], foreground: "markdown.blockQuote", style: { italic: true } },
+  { scope: ["markup.raw", "markup.raw.block"], foreground: "markdown.code", style: {} },
+  { scope: ["markup.raw.inline"], foreground: "markdown.code", background: "background.base", style: {} },
+  { scope: ["markup.link", "markup.link.url", "string.special", "string.special.url"], foreground: "markdown.link", style: { underline: true } },
+  { scope: ["markup.link.label"], foreground: "markdown.linkText", style: { underline: true } },
+  { scope: ["label"], foreground: "markdown.linkText", style: {} },
+  { scope: ["spell", "nospell"], foreground: "text.base", style: {} },
+  // The struck-run row, transcribed whole: the host shares one row across
+  // `markup.strikethrough`, `markup.list.unchecked` and `debug`, and this
+  // renderer emits at least the first of them (a `~~struck~~` run).
+  { scope: ["markup.strikethrough", "markup.list.unchecked", "debug"], foreground: "text.muted", style: {} },
+]
+
+/**
+ * Every token the table reads, deduplicated, in table order.
+ *
+ * The order is what makes the memo key position-stable, and the dedupe is what
+ * keeps `syntax.keyword` -- which four rows read -- from counting four times
+ * toward a key that only ever compared for equality. Built from the table
+ * rather than listed by hand so a new row cannot be forgotten here.
+ */
+const TABLE_TOKENS: readonly TokenPath[] = [
+  ...new Set(
+    SCOPE_TABLE.flatMap((row) => (row.background === undefined ? [row.foreground] : [row.foreground, row.background])),
+  ),
+]
+
+/**
+ * True for the values the host resolves its theme colours to.
+ *
+ * Structural rather than `instanceof RGBA`, on purpose. This plugin must not
+ * assume which module instance its `@opentui/core` import landed on -- every
+ * duplicate-runtime failure it is built to avoid has been an identity mismatch,
+ * so a class-identity check is exactly the wrong shape for this codebase. The
+ * channels are the class's public getters (`class RGBA` in `@opentui/core`:
+ * `r`, `g`, `b` and `a` are numbers read out of a `Uint16Array`), so a real
+ * instance of any copy passes, and nothing a malformed config could leave in
+ * its place -- a hex string, a number, null, a stray object -- does.
+ */
+function isRgba(value: unknown): value is RGBA {
+  const candidate = value as { r?: unknown; g?: unknown; b?: unknown; a?: unknown } | null | undefined
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof candidate.r === "number" &&
+    typeof candidate.g === "number" &&
+    typeof candidate.b === "number" &&
+    typeof candidate.a === "number"
+  )
+}
+
+/** Reads one token out of the theme, treating anything but a real colour as absent. */
+function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): RGBA | undefined {
+  // One cast, at the only place a `TokenPath`'s segments meet the theme's shape.
+  // The walk is segment by segment because tokens are nested --
+  // `text.feedback.error.base` is three groups deep in a real theme -- and the
+  // first revision of this function split at the first dot only, which would
+  // have read `theme.text["feedback.error.base"]` and found nothing. Anything
+  // that is not an object along the way ends the walk as "not there".
+  let node: unknown = theme as Record<string, unknown> | undefined
+  for (const segment of path.split(".")) {
+    node = (node as Record<string, unknown> | undefined)?.[segment]
+    if (node === undefined) return undefined
+  }
+  // A theme is data the host assembled from a user's config, so this guard is
+  // not paranoia: whatever the config held before resolution -- a string, a
+  // number, null, a stray object -- can land here, and only a real colour gets
+  // through. A colour the host did not resolve is a token that is not there.
+  return isRgba(node) ? node : undefined
+}
+
+/**
+ * One colour, spelled for the memo key.
+ *
+ * The channels rather than `toString()`: a colour that reaches this has already
+ * passed `isRgba`, so the getters are there to read, and two themes whose
+ * tokens are equal in value -- however many `RGBA` instances they arrived in --
+ * build one style between them.
+ */
+function colourKey(value: RGBA | undefined): string {
+  return value === undefined ? "" : `${value.r},${value.g},${value.b},${value.a}`
+}
+
+/**
+ * The style this module last built, keyed by the tokens it was built from.
+ *
+ * `SyntaxStyle` holds a native handle and has a `destroy()` this never calls, so
+ * every style built here is one the process keeps until it exits. The cache is
+ * what holds the count down, and because it holds one entry the bound is one
+ * style per cache miss -- which, with one plugin and one active theme, is one
+ * per theme change. The `fallback` slot below is the exception, and it is capped
+ * at one for the whole session rather than one per bad theme.
+ *
+ * Without the cache the cost is per *viewer mount* rather than per *theme
+ * change* -- `FileViewer` asks for a style each time it opens a `.md` file -- so
+ * an hour of reading files in one theme would leak an hour's worth of native
+ * styles, and the worst case is the empty theme, which is the one every file
+ * opened before the host resolved a theme would hit.
+ */
+let cached: { key: string; style: SyntaxStyle } | null = null
+
+/**
+ * The style handed back when the theme cannot be read at all.
+ *
+ * Apart from `cached` because a throw can happen anywhere in the body, including
+ * before the key is known, so there is no key to hang it on. It is held rather
+ * than rebuilt for the same reason: the catch sits on the path of every mount
+ * while a bad theme stands.
+ */
+let fallback: SyntaxStyle | null = null
+
+/**
+ * A `SyntaxStyle` built from the host theme, or `SyntaxStyle.create()` when the
+ * theme carries nothing usable.
+ *
+ * `create()` is a real, truthy style -- the host's own fallback -- so a thin
+ * theme buys an uncoloured preview, never a return to raw markdown source. That
+ * distinction is the whole reason this function cannot fail: the caller has no
+ * error path to offer but showing the file unformatted, and showing it
+ * unformatted is the complaint this feature exists to answer.
+ *
+ * Never throws. The whole body is inside the try, because a theme is data from
+ * the user's config and a malformed one must not take the panel down.
+ */
+export function buildSyntaxStyle(theme: MarkdownTheme | undefined): SyntaxStyle {
+  try {
+    // The key joins the values in table order with a blank for every absent
+    // token, so two different themes cannot collide: a theme that lost a token
+    // gets a shorter key rather than the key of a theme that never had it.
+    const key = TABLE_TOKENS.map((path) => colourKey(tokenValue(theme, path))).join("\u0000")
+    // The cache check comes before anything that allocates, and in particular
+    // before the `create()` at the bottom of this block: a repeat has to cost
+    // nothing, and an untokenised theme is the one that repeats most.
+    if (cached !== null && cached.key === key) return cached.style
+
+    const scopes: ThemeTokenStyle[] = []
+    for (const row of SCOPE_TABLE) {
+      const foreground = tokenValue(theme, row.foreground)
+      if (foreground === undefined) continue
+      const background = row.background === undefined ? undefined : tokenValue(theme, row.background)
+      if (row.background !== undefined && background === undefined) continue
+      const style: ThemeTokenStyle["style"] = { foreground }
+      if (background !== undefined) style.background = background
+      Object.assign(style, row.style)
+      scopes.push({ scope: [...row.scope], style })
+    }
+
+    // An empty list is "the theme carried nothing this table reads": every token
+    // absent, a theme with only a background and no foreground, or colours that
+    // were all empty strings. Hand back the host's own empty style rather than
+    // asking `fromTheme` for a style with no scopes in it -- and cache it, for
+    // the same reason as any other result, since this is the path every file
+    // opened before the host resolved a theme takes.
+    const style = scopes.length === 0 ? SyntaxStyle.create() : SyntaxStyle.fromTheme(scopes)
+    cached = { key, style }
+    return style
+  } catch {
+    // A theme that cannot be read is still not a reason to show raw source. Held
+    // rather than rebuilt, and kept out of `cached` because a throw can land
+    // before the key is known; delegating to the empty-theme branch instead
+    // would recurse for ever if `create()` itself were what threw.
+    fallback ??= SyntaxStyle.create()
+    return fallback
+  }
+}

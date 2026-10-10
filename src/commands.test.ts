@@ -1,13 +1,8 @@
 import { describe, it, expect } from "bun:test"
-import {
-  createTreeCommands,
-  parseEditorCommand,
-  spawnEditor,
-  promptSession,
-} from "./commands"
+import { createTreeCommands, promptSession } from "./commands"
 import { createTreeState } from "./store"
 
-function setup(options: { editorFails?: boolean } = {}) {
+function setup() {
   const state = createTreeState()
   const sent: string[] = []
   const opened: string[] = []
@@ -23,9 +18,8 @@ function setup(options: { editorFails?: boolean } = {}) {
       reloadCount++
     },
     sendToSession: (entry) => sent.push(entry.path),
-    openInEditor: async (entry) => {
+    openInViewer: (entry) => {
       opened.push(entry.path)
-      return options.editorFails ? { ok: false, error: "ENOENT" } : { ok: true }
     },
   })
 
@@ -42,36 +36,12 @@ const SRC = { name: "src", path: "/proj/src", isDirectory: true }
 const INDEX = { name: "index.ts", path: "/proj/src/index.ts", isDirectory: false }
 const README = { name: "README.md", path: "/proj/README.md", isDirectory: false }
 
-describe("parseEditorCommand", () => {
-  it("splits a command with arguments", () => {
-    expect(parseEditorCommand("code --wait")).toEqual({ command: "code", args: ["--wait"] })
-  })
-
-  it("handles a bare command", () => {
-    expect(parseEditorCommand("vim")).toEqual({ command: "vim", args: [] })
-  })
-
-  it("falls back to code for an empty value", () => {
-    expect(parseEditorCommand("   ")).toEqual({ command: "code", args: [] })
-  })
-})
-
-describe("spawnEditor", () => {
-  it("returns ok for a runnable editor", async () => {
-    // A real, always-present executable stands in for the user's editor.
-    const result = await spawnEditor(INDEX, { EDITOR: "cmd" })
-    expect(result.ok).toBe(true)
-  })
-
-  it("reports a missing editor instead of throwing", async () => {
-    const result = await spawnEditor(INDEX, { EDITOR: "definitely-not-a-real-editor-xyz" })
-    expect(result.ok).toBe(false)
-  })
-
-  it("does not throw when $EDITOR is unset", async () => {
-    expect((await spawnEditor(INDEX, {})).ok).toBe(true)
-  })
-})
+/*
+ * `parseEditorCommand`, `spawnEditor` and `EditorResult` are deleted from
+ * commands.ts, and these tests went with them. Their subject was a child
+ * process; `open()` now opens a panel, which the "tree commands" block below
+ * covers as `openInViewer`. See the comment in commands.ts.
+ */
 
 describe("promptSession", () => {
   const client = (impl: (input: { sessionID: string; text: string }) => Promise<unknown>) => ({
@@ -191,35 +161,46 @@ describe("tree commands", () => {
     expect(state.currentEntry()?.name).toBe("src")
   })
 
-  it("open opens a file in the editor", async () => {
+  it("open opens a file in the viewer", () => {
     const { state, commands, opened } = setup()
     state.setEntries([SRC, INDEX])
     state.setCursor(1)
-    await commands.open()
+
+    commands.open()
+
     expect(opened).toEqual(["/proj/src/index.ts"])
   })
 
-  it("open expands a directory instead of opening it", async () => {
+  it("open expands a directory instead of opening it", () => {
     const { state, commands, opened } = setup()
     state.setEntries([SRC])
     state.setChildrenMap(new Map([["/proj/src", [INDEX]]]))
     state.setCursor(0)
 
-    await commands.open()
+    commands.open()
+
+    // A directory still folds. The viewer refuses to read one and would show
+    // that refusal where the reader expected the tree to move.
     expect(opened).toEqual([])
     expect(state.expanded().has("/proj/src")).toBe(true)
   })
 
-  it("open does nothing on an empty tree", async () => {
+  it("open does nothing on an empty tree", () => {
     const { commands, opened } = setup()
-    expect(await commands.open()).toBeUndefined()
+
+    commands.open()
+
     expect(opened).toEqual([])
   })
 
-  it("open surfaces an editor failure without throwing", async () => {
-    const { state, commands } = setup({ editorFails: true })
+  it("open returns nothing, so a keypress never awaits a panel", () => {
+    const { state, commands } = setup()
     state.setEntries([INDEX])
-    expect(await commands.open()).toEqual({ ok: false, error: "ENOENT" })
+
+    // The editor it replaced returned a promise, and `nav.open` had to await it
+    // and toast on failure. Opening a panel is synchronous, and there is no
+    // result to inspect.
+    expect(commands.open()).toBeUndefined()
   })
 
   it("send sends the selected entry to the session", () => {

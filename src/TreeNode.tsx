@@ -16,23 +16,30 @@ export function TreeNode(props: TreeNodeProps) {
   const git = getGitStatusIndicator(props.gitStatus)
   const described = props.gitStatus ? ` ${describeGitStatus(props.gitStatus)}` : ""
 
-  // The cursor is a character in the text, not a background colour. `bg` on a
-  // <text> does not repaint when the selection moves: state updated correctly
-  // but the row looked unchanged until something else forced a redraw. Text
-  // content always repaints, so the marker cannot go stale.
-  const marker = props.isSelected ? "› " : "  "
+  // The selected row wears cyan on blue and nothing else. The `›` marker that
+  // used to carry the selection is gone: it earned its keep when only text
+  // content repainted, the rows now rebuild on every visible change (cursor
+  // included), and it cost two columns of a 42-column sidebar.
 
   // Changed rows wear the git status color; the selection's cyan wins so the
   // cursor stays unmistakable on top of them. Clean rows pass `undefined` and
   // keep the theme default.
   const fg = props.isSelected ? "cyan" : gitStatusColor(props.gitStatus)
 
-  // A single text node with string children. OpenTUI's TextNodeRenderable
-  // accepts only strings, TextNodeRenderables, or StyledText, so a nested
-  // <text> element here throws.
+  /*
+   * One row per entry, always. A wrapped name breaks that shape -- the second
+   * line reads as another entry, and the viewport's row-per-index math stops
+   * matching the screen. `wrapMode="none"` refuses the wrap and `truncate` cuts
+   * the row at the renderable's own width, so it adapts by itself: a 42-column
+   * sidebar and a wide panel both get one line per row.
+   *
+   * A single text node with string children. OpenTUI's TextNodeRenderable
+   * accepts only strings, TextNodeRenderables, or StyledText, so a nested
+   * <text> element here throws.
+   */
   return (
-    <text fg={fg} bg={props.isSelected ? "blue" : undefined}>
-      {`${marker}${indent}${chevron}${icon} ${props.entry.name}${git}${described}`}
+    <text fg={fg} bg={props.isSelected ? "blue" : undefined} wrapMode="none" truncate>
+      {`${indent}${chevron}${icon} ${props.entry.name}${git}${described}`}
     </text>
   )
 }
