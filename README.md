@@ -267,10 +267,16 @@ to the session gets an error toast rather than taking the TUI down.
 ## Development
 
 ```
-bun test          # 375 tests, 4 of which fail on a checkout with node_modules
+bun test          # 408 tests, 4 of which fail on a checkout with node_modules
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```
+
+`scripts/probe-markdown-layout.ts` is a manual layout check against the real
+renderer -- `bun scripts/probe-markdown-layout.ts` builds the markdown branch's
+exact tree and asserts the header keeps its row above the scrollbox, at rest
+and scrolled. The unit suite stubs OpenTUI and cannot see geometry; this is
+what caught (and now guards) the header/content overlap.
 
 **A rebuild needs a full OpenCode restart.** The plugin is loaded once, when the
 TUI starts. OpenCode's plugin hot reload watches the shim's entry file

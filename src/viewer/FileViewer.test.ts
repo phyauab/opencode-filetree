@@ -581,6 +581,37 @@ describe("a markdown file", () => {
     )
     expect(resizedBox?.props.flexGrow).toBe(1)
   })
+
+  it("keeps the header's row out of the scrollbox's shrink", () => {
+    /*
+     * The break: OpenTUI renderables default to `flexShrink: 1`, and a
+     * fixed-height column whose children's flex bases overflow it shrinks both
+     * children in proportion to those bases. The scrollbox's basis is `auto` --
+     * its content height -- so any document taller than the panel overflows the
+     * column, the scrollbox's basis dominates the shrink, and it fills the box
+     * from y=0 over the header's row: the live symptom is the filename and the
+     * first line of the file sharing a row, and the overlap changing as you
+     * scroll.
+     *
+     * Measured, not theorised: `scripts/probe-markdown-layout.ts` runs this
+     * exact tree through the real renderer and captured `linem1.md` as row 0
+     * before the fix and a clean `readme.md` / `line 1` pair after it. The unit
+     * suite cannot see geometry -- OpenTUI is stubbed here -- so what it pins is
+     * the pair of props that carries the bound, and the probe is what pins the
+     * bound's effect. Short files fit either way, which is why this reads as a
+     * bug in long files only.
+     */
+    const path = makeFile("readme.md", "# Title\n\nsome text\n")
+    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const children = elements(element?.props?.children)
+
+    const header = children.find((child: any) => child.type === "text")
+    const scrollbox = children.find((child: any) => child.type === "scrollbox")
+    // The header's row is not negotiable...
+    expect(header?.props.flexShrink).toBe(0)
+    // ...and the scrollbox's size comes from the container, never its content.
+    expect(scrollbox?.props.flexBasis).toBe(0)
+  })
 })
 
 /*

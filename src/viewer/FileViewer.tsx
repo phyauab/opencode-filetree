@@ -443,13 +443,33 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      * instead of a bet on the host. One line, and strictly narrower than the
      * behaviour it replaces -- the box cannot now claim more rows than the
      * panel measured, whatever the container does.
+     *
+     * The two yoga props below are the other half of that bound, and they are
+     * load-bearing rather than tidying. Measured against the real renderer
+     * (`scripts/probe-markdown-layout.ts`): OpenTUI renderables default to
+     * `flexShrink: 1`, and a fixed-height column whose children's flex bases
+     * overflow it shrinks both in proportion to those bases. The scrollbox's
+     * basis is `auto` -- its content height, 119 rows for a 60-line document --
+     * so with the header's 1 row the column claims 120 rows of a 20-row box.
+     * The pair shrink, the scrollbox's basis dominates, and it ends up filling
+     * the box from y=0: the captured geometry is header y=0, scrollbox y=0 h=20,
+     * viewport y=0, and the captured frame's first row reads `linem1.md` -- the
+     * filename and the first line of the file painted on one row. Scrolling
+     * moves the first line up out of the overlap, which is why the mixing
+     * changes shape as you scroll instead of disappearing, and why a file short
+     * enough to fit never shows it.
+     *
+     * `flexShrink={0}` on the header says its one row is not negotiable;
+     * `flexBasis={0}` on the scrollbox says the box's size comes from the
+     * container and never from its content -- which is what scrolling is for.
+     * Either alone fixes it; both state the invariant from both ends.
      */
     return (
       <box flexDirection="column" height={props.height}>
-        <text fg="dim" wrapMode="none" truncate>
+        <text fg="dim" wrapMode="none" truncate flexShrink={0}>
           {markdownHeader(file, props.path)}
         </text>
-        <scrollbox flexGrow={1} ref={captureMarkdownBox}>
+        <scrollbox flexGrow={1} flexBasis={0} ref={captureMarkdownBox}>
           <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />
         </scrollbox>
       </box>
