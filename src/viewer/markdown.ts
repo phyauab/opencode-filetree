@@ -38,7 +38,12 @@ import { languageFor } from "./highlight"
  * is the only shape worth writing down.
  */
 export type MarkdownTheme = {
-  text?: { base?: RGBA }
+  text?: {
+    base?: RGBA
+    muted?: RGBA
+    /** The feedback colours, for the scopes only a fenced block can produce. */
+    feedback?: Partial<Record<"error" | "warning", { base?: RGBA }>>
+  }
   syntax?: Partial<Record<"comment" | "keyword" | "function" | "variable" | "string" | "number" | "type" | "operator" | "punctuation", RGBA>>
   markdown?: Partial<Record<"heading" | "strong" | "emphasis" | "code" | "blockQuote" | "link" | "linkText" | "listItem", RGBA>>
   // Declared because the host's own bridge reads it for inline code: the
@@ -73,6 +78,9 @@ export function isMarkdown(path: string): boolean {
  */
 type TokenPath =
   | "text.base"
+  | "text.muted"
+  | "text.feedback.error.base"
+  | "text.feedback.warning.base"
   | "syntax.comment"
   | "syntax.keyword"
   | "syntax.function"
@@ -135,13 +143,43 @@ const SCOPE_TABLE: readonly ScopeRow[] = [
   { scope: ["keyword.return", "keyword.conditional", "keyword.repeat", "keyword.coroutine"], foreground: "syntax.keyword", style: { italic: true } },
   { scope: ["keyword.type"], foreground: "syntax.type", style: { bold: true, italic: true } },
   { scope: ["keyword.function", "function.method"], foreground: "syntax.function", style: {} },
-  { scope: ["keyword", "keyword.import", "string.escape", "string.regexp", "tag.attribute", "keyword.export"], foreground: "syntax.keyword", style: {} },
+  // Two rows in the host's bridge, and they were merged into one here by
+  // mistake: the merge kept the scopes and dropped the italic the host puts on
+  // a bare `keyword`, so every highlighted keyword came out upright where the
+  // host paints it italic. Split back, row for row.
+  { scope: ["keyword"], foreground: "syntax.keyword", style: { italic: true } },
+  { scope: ["keyword.import", "string.escape", "string.regexp", "tag.attribute", "keyword.export"], foreground: "syntax.keyword", style: {} },
   { scope: ["operator", "keyword.operator", "punctuation.delimiter", "keyword.conditional.ternary"], foreground: "syntax.operator", style: {} },
   { scope: ["variable", "variable.parameter", "function.method.call", "function.call", "property", "parameter", "field"], foreground: "syntax.variable", style: {} },
   { scope: ["variable.member", "function", "constructor"], foreground: "syntax.function", style: {} },
   { scope: ["type", "module", "class", "namespace"], foreground: "syntax.type", style: {} },
   { scope: ["type.definition"], foreground: "syntax.type", style: { bold: true } },
   { scope: ["punctuation", "punctuation.bracket"], foreground: "syntax.punctuation", style: {} },
+  /*
+   * The rows only a fenced code block can produce.
+   *
+   * A fenced block is highlighted with the host's tree-sitter scopes, so these
+   * are reachable from an ordinary `.md` file -- `Array` in a ```ts fence
+   * carries `variable.builtin`, a JSX fence carries `tag` and `attribute`, a
+   * C fence carries `keyword.directive` -- and without them all of it falls
+   * back to the default colour while the host's own preview paints it. Each is
+   * transcribed from the host's bridge, which colours the builtin family and
+   * `tag` from the error feedback and attributes from the warning one.
+   *
+   * What is deliberately absent, because this renderer never emits the scope:
+   * the host's `prompt`, `extmark.*`, `markup.underline`, `markup.list.checked`,
+   * `comment.error|warning|todo|note`, `diff.*` and `error|warning|info` rows.
+   * Those belong to the host's prompt editor, extmarks, chat and diff surfaces
+   * (grep `@opentui/core` for the group names and they do not exist), or only
+   * appear on a malformed fence. A row whose scope cannot be emitted is a row
+   * that only looks like coverage, and the first revision of this table was
+   * already one mistake of that kind.
+   */
+  { scope: ["variable.builtin", "type.builtin", "function.builtin", "module.builtin", "constant.builtin", "variable.super"], foreground: "text.feedback.error.base", style: {} },
+  { scope: ["keyword.directive", "keyword.modifier", "keyword.exception"], foreground: "syntax.keyword", style: { italic: true } },
+  { scope: ["punctuation.special", "tag.delimiter"], foreground: "syntax.operator", style: {} },
+  { scope: ["attribute", "annotation"], foreground: "text.feedback.warning.base", style: {} },
+  { scope: ["tag"], foreground: "text.feedback.error.base", style: {} },
   { scope: ["markup.heading", "markup.heading.2", "markup.heading.3", "markup.heading.4", "markup.heading.5", "markup.heading.6"], foreground: "markdown.heading", style: { bold: true } },
   { scope: ["markup.heading.1"], foreground: "markdown.heading", style: { bold: true, underline: true } },
   { scope: ["markup.bold", "markup.strong"], foreground: "markdown.strong", style: { bold: true } },
@@ -154,6 +192,10 @@ const SCOPE_TABLE: readonly ScopeRow[] = [
   { scope: ["markup.link.label"], foreground: "markdown.linkText", style: { underline: true } },
   { scope: ["label"], foreground: "markdown.linkText", style: {} },
   { scope: ["spell", "nospell"], foreground: "text.base", style: {} },
+  // The struck-run row, transcribed whole: the host shares one row across
+  // `markup.strikethrough`, `markup.list.unchecked` and `debug`, and this
+  // renderer emits at least the first of them (a `~~struck~~` run).
+  { scope: ["markup.strikethrough", "markup.list.unchecked", "debug"], foreground: "text.muted", style: {} },
 ]
 
 /**
@@ -196,19 +238,22 @@ function isRgba(value: unknown): value is RGBA {
 
 /** Reads one token out of the theme, treating anything but a real colour as absent. */
 function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): RGBA | undefined {
-  const dot = path.indexOf(".")
-  // One cast, at the only place the halves of a `TokenPath` meet again. Every
-  // group in `MarkdownTheme` is a bag of optional `RGBA`s, so this reads
-  // whichever one the path names; what the checker will not accept is a plain
-  // `string` indexing four different key unions at once, and narrowing each half
-  // separately would need the same cast four times over.
-  const groups = theme as Record<string, Record<string, unknown> | undefined> | undefined
-  const value = groups?.[path.slice(0, dot)]?.[path.slice(dot + 1)]
+  // One cast, at the only place a `TokenPath`'s segments meet the theme's shape.
+  // The walk is segment by segment because tokens are nested --
+  // `text.feedback.error.base` is three groups deep in a real theme -- and the
+  // first revision of this function split at the first dot only, which would
+  // have read `theme.text["feedback.error.base"]` and found nothing. Anything
+  // that is not an object along the way ends the walk as "not there".
+  let node: unknown = theme as Record<string, unknown> | undefined
+  for (const segment of path.split(".")) {
+    node = (node as Record<string, unknown> | undefined)?.[segment]
+    if (node === undefined) return undefined
+  }
   // A theme is data the host assembled from a user's config, so this guard is
   // not paranoia: whatever the config held before resolution -- a string, a
   // number, null, a stray object -- can land here, and only a real colour gets
   // through. A colour the host did not resolve is a token that is not there.
-  return isRgba(value) ? value : undefined
+  return isRgba(node) ? node : undefined
 }
 
 /**

@@ -267,7 +267,7 @@ to the session gets an error toast rather than taking the TUI down.
 ## Development
 
 ```
-bun test          # 408 tests, 4 of which fail on a checkout with node_modules
+bun test          # 412 tests, 4 of which fail on a checkout with node_modules
 bun run typecheck # tsc --noEmit
 bun run build     # compile to dist/
 ```

@@ -76,7 +76,11 @@ describe("buildSyntaxStyle", () => {
   it("maps the host's syntax tokens onto the scopes the host itself uses", () => {
     const scopes = scopesOf(buildSyntaxStyle(fullTheme))
     expect(scopes.get("comment")).toEqual({ foreground: rgbaHex("#5c6370"), italic: true })
-    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#c678dd") })
+    // A bare `keyword` is italic in the host's bridge and this table's two
+    // keyword rows now match it row for row; the import/escape/regex group
+    // beside it is the plain one.
+    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#c678dd"), italic: true })
+    expect(scopes.get("keyword.import")).toEqual({ foreground: rgbaHex("#c678dd") })
     expect(scopes.get("string")).toEqual({ foreground: rgbaHex("#98c379") })
     expect(scopes.get("number")).toEqual({ foreground: rgbaHex("#d19a66") })
     expect(scopes.get("function")).toEqual({ foreground: rgbaHex("#61afef") })
@@ -116,7 +120,7 @@ describe("buildSyntaxStyle", () => {
     expect(buildSyntaxStyle(fullTheme)).toBe(first)
     const second = buildSyntaxStyle({ ...fullTheme, syntax: { ...fullTheme.syntax, keyword: rgbaHex("#ff0000") } })
     expect(second).not.toBe(first)
-    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000") })
+    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000"), italic: true })
   })
 
   // Review focus #2, for the one row that reads a second token. Every other row
@@ -257,7 +261,7 @@ describe("buildSyntaxStyle when the theme cannot be read", () => {
     // the part that can fail -- the stub shares one object for `create()`, so a
     // return path that had been left on the fallback would compare equal here.
     const scopes = scopesOf(buildSyntaxStyle({ syntax: { keyword: rgbaHex("#1b1c1d") } }))
-    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#1b1c1d") })
+    expect(scopes.get("keyword")).toEqual({ foreground: rgbaHex("#1b1c1d"), italic: true })
     expect(buildSyntaxStyle({ syntax: { keyword: rgbaHex("#1b1c1d") } })).not.toBe(SyntaxStyle.create())
   })
 })
@@ -312,7 +316,7 @@ describe("buildSyntaxStyle with the theme shape the host resolves", () => {
     // The value is handed on untouched, not converted: `ColorInput` is
     // `string | RGBA` and the host's own bridge passes the RGBA straight in.
     expect(scopes.get("comment")).toEqual({ foreground: hostTheme.syntax.comment, italic: true })
-    expect(scopes.get("keyword")).toEqual({ foreground: hostTheme.syntax.keyword })
+    expect(scopes.get("keyword")).toEqual({ foreground: hostTheme.syntax.keyword, italic: true })
     expect(scopes.get("markup.heading")).toEqual({ foreground: hostTheme.markdown.heading, bold: true })
     expect(scopes.get("markup.italic")).toEqual({ foreground: hostTheme.markdown.emphasis, italic: true })
     expect(scopes.get("markup.raw.inline")).toEqual({ foreground: hostTheme.markdown.code, background: hostTheme.background.base })
@@ -358,6 +362,65 @@ describe("buildSyntaxStyle with the theme shape the host resolves", () => {
     expect(buildSyntaxStyle(again as unknown as MarkdownTheme)).toBe(first)
     const second = buildSyntaxStyle(recoloured as unknown as MarkdownTheme)
     expect(second).not.toBe(first)
-    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000") })
+    expect(scopesOf(second).get("keyword")).toEqual({ foreground: rgbaHex("#ff0000"), italic: true })
+  })
+})
+
+/*
+ * The rows the first table pass left out.
+ *
+ * The opening table transcribed the host's bridge for the scopes a prose
+ * markdown document produces. Two more reachable families were missing, and
+ * both are observable in a real preview: a fenced code block is highlighted
+ * with the host's own tree-sitter scopes, so builtins (`Array`, `String`),
+ * tags and attributes carry `variable.builtin`/`tag`/`attribute`; and a struck
+ * run carries `markup.strikethrough`. Without their rows all of it falls back
+ * to the default colour while the host paints the same file coloured.
+ *
+ * What is deliberately NOT here: the host's `markup.list.checked`,
+ * `markup.underline`, `diff.*`, `prompt` and `extmark.*` rows. Those scopes are
+ * produced by the host's chat and diff surfaces, never by `MarkdownRenderable`
+ * -- grep @opentui/core for the group names and they do not exist. A row whose
+ * scope cannot be emitted is a row that only looks like coverage.
+ */
+describe("buildSyntaxStyle for the scopes a fenced block or a struck run can produce", () => {
+  it("colours a struck run in the theme's muted colour, with no attributes", () => {
+    // The host's row is `["markup.strikethrough", "markup.list.unchecked",
+    // "debug"] -> text.muted` with no style, and the row is transcribed with all
+    // three scopes because the renderer emits at least the first of them.
+    const scopes = scopesOf(buildSyntaxStyle({ text: { muted: rgbaHex("#5c6370") } }))
+    expect(scopes.get("markup.strikethrough")).toEqual({ foreground: rgbaHex("#5c6370") })
+  })
+
+  it("colours builtins and tags in the theme's error feedback colour", () => {
+    const theme = {
+      text: { feedback: { error: { base: rgbaHex("#be5046") }, warning: { base: rgbaHex("#d19a66") } } },
+    }
+    const scopes = scopesOf(buildSyntaxStyle(theme as unknown as MarkdownTheme))
+    // The host's builtins row: every `*.builtin` capture plus `variable.super`
+    // takes the error feedback colour, and `tag` shares it.
+    expect(scopes.get("variable.builtin")).toEqual({ foreground: rgbaHex("#be5046") })
+    expect(scopes.get("type.builtin")).toEqual({ foreground: rgbaHex("#be5046") })
+    expect(scopes.get("function.builtin")).toEqual({ foreground: rgbaHex("#be5046") })
+    expect(scopes.get("tag")).toEqual({ foreground: rgbaHex("#be5046") })
+    // Attributes are the warning half of the same pair in the host's table.
+    expect(scopes.get("attribute")).toEqual({ foreground: rgbaHex("#d19a66") })
+  })
+
+  it("gives directive keywords the keyword colour, and special punctuation the operator colour", () => {
+    const theme = { syntax: { keyword: rgbaHex("#c678dd"), operator: rgbaHex("#56b6c2") } }
+    const scopes = scopesOf(buildSyntaxStyle(theme as unknown as MarkdownTheme))
+    expect(scopes.get("keyword.directive")).toEqual({ foreground: rgbaHex("#c678dd"), italic: true })
+    expect(scopes.get("punctuation.special")).toEqual({ foreground: rgbaHex("#56b6c2") })
+  })
+
+  it("skips the feedback rows whole when the theme carries no feedback tokens", () => {
+    // The same rule as the inline-code row: a row with a missing token is
+    // dropped rather than half-filled.
+    const theme = { text: { feedback: { warning: { base: rgbaHex("#d19a66") } } } }
+    const scopes = scopesOf(buildSyntaxStyle(theme as unknown as MarkdownTheme))
+    expect(scopes.has("variable.builtin")).toBe(false)
+    expect(scopes.has("tag")).toBe(false)
+    expect(scopes.get("attribute")).toEqual({ foreground: rgbaHex("#d19a66") })
   })
 })
