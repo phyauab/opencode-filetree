@@ -451,17 +451,24 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    *
    * The scrollbox's own scroll event would be the better shape and is not
    * available, and the reason is worth getting right because it is not the
-   * obvious one. `ScrollBarRenderable` *does* emit `change` -- but only from the
-   * slider thumb's drag callback in its constructor
-   * (`index.node.js`, `ScrollBarRenderable`'s `slider: new SliderRenderable({...,
-   * onChange: (value) => { ...; this.emit("change", { position:
-   * this._scrollPosition }) }})`). Its `scrollPosition` setter never emits, so
-   * neither a wheel nor `scrollTo` nor `scrollChildIntoView` reaches that event;
-   * it fires when the reader drags the thumb. And `ScrollBoxRenderable` never
-   * subscribes to its own scrollbars' `change` and never re-emits it -- the four
-   * `this.emit(...)` calls in its body are all `SelectRenderableEvents`, which
-   * belong to the select class this source was copied from. So there is nothing
-   * on the scrollbox to subscribe to for a scroll, and a frame is what is left.
+   * obvious one -- it sits one level up. `ScrollBarRenderable` *does* emit
+   * `change`, and readily: `set scrollPosition` (13854) calls
+   * `updateSliderFromScrollState()`, which assigns `this.slider.value`, and
+   * `SliderRenderable`'s `set value` (13575) fires the `onChange` the
+   * scrollbar handed its constructor (13893-13903), a body whose last line is
+   * `this.emit("change", { position: this._scrollPosition })`. A wheel,
+   * `scrollTo` and `scrollChildIntoView` all set `scrollPosition`, so each
+   * one reaches that event; the thumb drag is only the loudest path into it.
+   * That same `set value` calls `requestRender()`, so a wheel's frames come
+   * down this chain, which is what makes the frame approach sound. What is
+   * missing sits one level up from there: `ScrollBoxRenderable`
+   * (index.node.js:14187, ~650 lines) emits nothing on itself -- not one
+   * `this.emit(...)` in the whole body, of any event kind -- so it never
+   * re-emits anything its scrollbars do, and it never listens to their
+   * `change`; it only hands their constructors an `onChange` (14404, 14419)
+   * that moves the content. A class that emits nothing has nothing to
+   * subscribe to, whatever its scrollbars do. That is the real reason, and a
+   * stronger one than "the scrollbar does not fire"; a frame is what is left.
    *
    * An earlier version of this comment said the scrollbar's `change` emit was
    * "commented out". It is not -- it exists and fires on thumb drags -- and the
