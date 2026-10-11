@@ -1618,6 +1618,318 @@ describe("a terminal that changes width", () => {
   })
 })
 
+/*
+ * The feature end to end: open a document, scroll it, resize the terminal
+ * around it, and watch the sidebar do what it is for.
+ *
+ * Everything above is one question at a time -- the rows, the writer, the
+ * offset, the window -- because that is what makes each answer checkable. This
+ * block is the same assertions against the parts as they are actually joined,
+ * because a suite of unit answers can all be right while the joins are wrong.
+ *
+ * The one limit, stated once rather than repeated: the stub's JSX runtime
+ * records `props.children` and never re-runs it, so a signal write cannot reach
+ * a tree that is already built. `mountViewer` below paints the component again
+ * on demand, which is the same stand-in the resize tests above use, and it is
+ * the reason every test here reads through a freshly painted element.
+ */
+
+/**
+ * A mounted viewer that paints again whenever a test asks it to.
+ *
+ * `settings` is read through getters on every paint rather than copied into the
+ * props, so changing the terminal's width, the panel's height or the width cap
+ * and painting again is the whole of a "the terminal was resized" simulation --
+ * and the reader can see by eye that the component is being handed a live
+ * number rather than a snapshot from before the change.
+ *
+ * `renderContentView` runs inside each paint, the way the host's reconciler
+ * would tear down and rebuild the scrollbox's content: without it the layout
+ * has handed over no positions, the sidebar has no rows, and half of what this
+ * block asserts would be about an empty map.
+ */
+function mountViewer(path: string, settings: { terminal: number; height: number; maxWidth?: number }) {
+  const renderer = createMockRenderer(settings.terminal)
+  // A live width rather than the number the mock was built with: the mock
+  // reports the terminal it was given, and a resize that only moved the number
+  // the test holds would not be a resize at all.
+  Object.defineProperty(renderer, "width", { get: () => settings.terminal, configurable: true })
+  let state: any
+  const props: any = {
+    path,
+    context: { ...makeContext(renderer, path), theme: mdTheme },
+    onHeadings: (s: any) => {
+      state = s
+    },
+    get height() {
+      return settings.height
+    },
+    get maxWidth() {
+      return settings.maxWidth
+    },
+  }
+  const paint = () => {
+    const element = (FileViewer as any)(props)
+    renderContentView(element)
+    return element
+  }
+  return { paint, settings, renderer, headings: () => state }
+}
+
+/** The root's columns: the content first, then the sidebar when there is one. */
+function columnsOf(element: any): any[] {
+  return elements(element?.props?.children).filter((child: any) => child.type === "box")
+}
+
+/** The sidebar's width in columns, or zero when the document gets no sidebar. */
+function tocWidthOf(element: any): number {
+  return tocOf(element)?.props.width ?? 0
+}
+
+describe("the table of contents, end to end", () => {
+  it("draws the headings beside the document, indented by level", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n")
+    const viewer = mountViewer(path, { terminal: 120, height: 20 })
+    const element = viewer.paint()
+
+    // Two columns: the document, and the sidebar beside it.
+    expect(columnsOf(element)).toHaveLength(2)
+    /*
+     * The indent is two columns per level below the first, so a document whose
+     * headings are all `#` spends nothing and a nested one shows its shape.
+     * Each heading's text follows its own indent, which is what a reader uses
+     * to see that `### Three` is inside `## Two`.
+     */
+    expect(tocRowsOf(element)).toEqual(["Contents", "One", "  Two", "    Three"])
+    // The label is the sidebar's own row and each heading is one more, so the
+    // list is four rows for three headings -- none was quietly dropped for want
+    // of a row, and none was drawn twice.
+    expect(tocRowsOf(element)).toHaveLength(4)
+    // And the columns add up to the terminal rather than overlapping it.
+    expect(contentColumnOf(element).props.width + tocWidthOf(element)).toBe(120)
+  })
+
+  it("moves the active heading as the content scrolls under it", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n")
+    const viewer = mountViewer(path, { terminal: 120, height: 20 })
+
+    /*
+     * The one thing this cannot show, and the reason is worth stating exactly
+     * because it is not the reason the rest of the file gives for it.
+     *
+     * No paint can ever draw the highlight. `headingPositions` is a signal the
+     * *component* owns, so every paint starts a fresh one at empty, and the
+     * only writer -- `MarkdownContentView`'s `onHeadingPositions` -- runs after
+     * the body has already asked `activeHeading()` what to mark. Re-painting
+     * does not help: the second paint's signal is as empty as the first's. The
+     * sidebar is therefore always drawn at `-1`, with every row dim.
+     *
+     * What is left is the two ends of the join, asserted from both sides: the
+     * active heading the keymap would navigate by (`active()`, below), and the
+     * row style that the index would be handed to (`tocEntryStyle`, in its own
+     * tests). Closing the distance between them needs a real reconciler.
+     */
+    const unpainted = viewer.paint()
+    expect(tocRowStyle(unpainted, 1)).toEqual({ fg: "dim" })
+
+    // A second paint, so the layout's own numbers are the ones in play.
+    const element = viewer.paint()
+    const positions = viewer.headings().positions()
+    expect([...positions.entries()]).toEqual([
+      [0, 0],
+      [1, 4],
+      [2, 8],
+    ])
+
+    /*
+     * Now scroll the document to each heading in turn and ask the sidebar who
+     * the reader is with. The offset is read off the renderable -- the wheel's
+     * route, not a keypress's -- so this is the same number the sidebar draws
+     * from, and the answer has to be the heading that row belongs to.
+     */
+    const box = attachScrollbox(element, 0, 400, 20)
+    const at = (row: number) => {
+      box.scrollTo(row)
+      return viewer.headings().active()
+    }
+    expect(at(positions.get(0)!)).toBe(0)
+    expect(at(positions.get(1)!)).toBe(1)
+    expect(at(positions.get(2)!)).toBe(2)
+    // And back down again, because an answer that only works in one direction
+    // is a cached one.
+    expect(at(positions.get(0)!)).toBe(0)
+
+    /*
+     * The sidebar's window has to hold whichever heading is active, or the
+     * highlight lands on a row that is not on screen -- the reader sees
+     * "Three" marked at the bottom of a list whose visible rows are Five
+     * through Eight.
+     *
+     * A two-row window is used rather than the panel's own nineteen, because
+     * nineteen rows for three headings never scrolls and would pass whatever
+     * `tocWindowStart` returned. Three headings in two rows does scroll, so the
+     * invariant is actually load-bearing here.
+     */
+    for (const row of positions.values()) {
+      box.scrollTo(row)
+      const active = viewer.headings().active()
+      const start = tocWindowStart(active, positions.size, 2)
+      expect(start).toBeLessThanOrEqual(active)
+      expect(active).toBeLessThan(start + 2)
+    }
+  })
+
+  it("names the right heading after the terminal has been resized", () => {
+    /*
+     * The failure this feature exists for, restated as a resize.
+     *
+     * A row number is only meaningful for the width it was computed at: the
+     * paragraph between two headings wraps onto more rows as the content column
+     * narrows, and every heading below it moves down. So the row the wide
+     * terminal gave the last heading is a row the narrow terminal puts in the
+     * middle of the previous section, and a keypress that used the old number
+     * would land there -- silently, on a real row, in the wrong place.
+     */
+    const source =
+      "# One\n\naaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss\n\n## Two\n\n" +
+      "bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss\n\n### Three\n\ntext\n"
+    const path = makeFile("readme.md", source)
+    const viewer = mountViewer(path, { terminal: 120, height: 20, maxWidth: 150 })
+
+    const wide = viewer.paint()
+    const widePositions = viewer.headings().positions()
+    expect([...widePositions.entries()]).toEqual([
+      [0, 0],
+      [1, 4],
+      [2, 8],
+    ])
+
+    // Narrow the terminal to just past the floor: thirty columns of sidebar
+    // still fit beside thirty-one of document, so the sidebar stays and the
+    // document re-wraps.
+    viewer.settings.terminal = 61
+    const narrow = viewer.paint()
+    const narrowPositions = viewer.headings().positions()
+
+    expect(columnsOf(narrow)).toHaveLength(2)
+    // The same three headings, further down: the paragraph between the first
+    // two wrapped onto three rows instead of one.
+    expect(narrowPositions.get(1)).toBeGreaterThan(widePositions.get(1)!)
+    expect(narrowPositions.get(2)).toBeGreaterThan(widePositions.get(2)!)
+    // And the layout is drawing at the narrower width, so this is a re-layout
+    // rather than a second map of the same rows.
+    expect(contentViewOf(narrow).props.contentWidth).toBe(31)
+
+    /*
+     * The row that was right, and is now wrong.
+     *
+     * Scrolling to the wide layout's row for the last heading lands in the
+     * middle of the second section. The expected answer is read out of the new
+     * map rather than written down, and the map itself is checked so the
+     * derivation is visible: the last heading whose row is at or above the
+     * offset, which here is the second one and not the third.
+     */
+    const staleRow = widePositions.get(2)!
+    const expected = [...narrowPositions.entries()].filter(([, row]) => row <= staleRow).pop()![0]
+    expect(expected).toBe(1)
+    const box = attachScrollbox(narrow, 0, 400, 20)
+    box.scrollTo(staleRow)
+    expect(viewer.headings().active()).toBe(expected)
+
+    // And the number the new layout does give for that heading gets there.
+    box.scrollTo(narrowPositions.get(2)!)
+    expect(viewer.headings().active()).toBe(2)
+  })
+
+  it("keeps the document and drops the sidebar in a narrow terminal", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
+    const viewer = mountViewer(path, { terminal: 40, height: 20 })
+    const element = viewer.paint()
+
+    // Forty columns cannot hold thirty of sidebar and thirty of document, so
+    // the sidebar is the thing that goes.
+    expect(columnsOf(element)).toHaveLength(1)
+    // The document is not squeezed into what is left over: it gets the terminal
+    // itself, and the layout is told that rather than a number nobody drew.
+    expect(contentColumnOf(element).props.width).toBe(40)
+    expect(contentViewOf(element).props.contentWidth).toBe(40)
+    // The document is still the document -- a sidebar-less viewer is a working
+    // viewer, not an empty one.
+    expect(contentViewOf(element).props.blocks).toHaveLength(4)
+    expect(viewer.headings().positions().size).toBe(2)
+  })
+
+  it("draws no sidebar at all for a document with no headings", () => {
+    const path = makeFile("readme.md", "just a paragraph\n\nand another\n")
+    const viewer = mountViewer(path, { terminal: 120, height: 20 })
+    const element = viewer.paint()
+
+    expect(columnsOf(element)).toHaveLength(1)
+    // No sidebar means no window, no highlight and no active heading either:
+    // `-1` is what the keymap would navigate by, and a document that cannot be
+    // navigated has to say so rather than answering zero and jumping to the
+    // first line.
+    expect(viewer.headings().active()).toBe(-1)
+    expect(viewer.headings().positions().size).toBe(0)
+    expect(tocWidthOf(element)).toBe(0)
+  })
+
+  it("indents one step deeper for each level of heading", () => {
+    const path = makeFile(
+      "readme.md",
+      "# L1\n\n## L2\n\n### L3\n\n#### L4\n\n##### L5\n\n###### L6\n\ntext\n",
+    )
+    const viewer = mountViewer(path, { terminal: 120, height: 20 })
+    const element = viewer.paint()
+
+    /*
+     * Two columns per level below the first, written out in full rather than
+     * generated from the same constant the component uses: a generated
+     * expectation restates the code and passes whatever the code does. The
+     * count is asserted too, because a document with six headings and a
+     * sidebar showing five is the failure this pins.
+     */
+    expect(tocRowsOf(element)).toEqual([
+      "Contents",
+      "L1",
+      "  L2",
+      "    L3",
+      "      L4",
+      "        L5",
+      "          L6",
+    ])
+  })
+
+  it("grows the sidebar back when the terminal widens, and loses it again", () => {
+    const path = makeFile("readme.md", "# One\n\npara\n\n## Two\n\npara\n\n### Three\n\npara\n")
+    const viewer = mountViewer(path, { terminal: 40, height: 20, maxWidth: 150 })
+
+    // Narrow to start: no sidebar, and the document has the whole terminal.
+    const narrow = viewer.paint()
+    expect(columnsOf(narrow)).toHaveLength(1)
+    expect(contentViewOf(narrow).props.contentWidth).toBe(40)
+
+    // Wide again: the sidebar returns, and the content column is what is left
+    // of the terminal after it.
+    viewer.settings.terminal = 120
+    const wide = viewer.paint()
+    expect(columnsOf(wide)).toHaveLength(2)
+    expect(tocWidthOf(wide)).toBe(30)
+    expect(contentColumnOf(wide).props.width).toBe(90)
+    expect(contentViewOf(wide).props.contentWidth).toBe(90)
+    // The document came back with it: three headings, and all three are named.
+    expect(tocRowsOf(wide)).toEqual(["Contents", "One", "  Two", "    Three"])
+
+    // And narrow once more, because a viewer that grew a sidebar and could not
+    // lose it again is the shape that puts the document off the right edge.
+    viewer.settings.terminal = 40
+    const back = viewer.paint()
+    expect(columnsOf(back)).toHaveLength(1)
+    expect(contentViewOf(back).props.contentWidth).toBe(40)
+    expect(tocWidthOf(back)).toBe(0)
+  })
+})
+
 describe("the heading state handed to the keymap", () => {
   it("hands over the positions and the active heading on a markdown file", () => {
     const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
