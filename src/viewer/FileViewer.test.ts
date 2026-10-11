@@ -142,6 +142,31 @@ function elements(children: unknown): any[] {
 }
 
 /**
+ * The content column: the one child `box` the root wraps the viewer's rows in.
+ *
+ * The root is `<box flexDirection="row" justifyContent="center">` wrapping a
+ * `<box flexDirection="column">`, so the header and the rows are the
+ * *grandchildren* of whatever the component returned. Master commit `19f6f38`
+ * ("feat: make viewer width configurable via command palette") added that
+ * centring box and never told this file, so the four helpers below each searched
+ * one flat `children` level, found the centring box where they expected the
+ * header, and reported empty results on every test that needed the rows.
+ *
+ * Every helper in this file therefore takes this step first and searches inside
+ * the content column afterwards. It is the single implementation of that
+ * traversal: a second one, written again wherever a test needed a row, is a
+ * second thing that can disagree with the markup.
+ */
+function contentColumnOf(element: any): any {
+  return elements(element?.props?.children).find((child: any) => child.type === "box")
+}
+
+/** The content column's children as elements: the header, then the rows. */
+function contentChildrenOf(element: any): any[] {
+  return elements(contentColumnOf(element)?.props?.children)
+}
+
+/**
  * The text a node renders, following the stub's shape: children are strings,
  * spans, or arrays of either, at any depth.
  */
@@ -152,9 +177,9 @@ function textOf(node: any): string {
   return typeof node === "object" ? textOf(node.props?.children) : ""
 }
 
-/** The header line, which is always the first child of the root box. */
+/** The header line, which is always the first child of the content column. */
 function headerOf(element: any): string {
-  return textOf(elements(element?.props?.children)[0])
+  return textOf(contentChildrenOf(element)[0])
 }
 
 /**
@@ -164,14 +189,25 @@ function headerOf(element: any): string {
  * the assertions do not have to know which kind produced it.
  */
 function rowsOf(element: any): string[] {
-  return elements(element?.props?.children)
+  return contentChildrenOf(element)
     .slice(1)
     .map(textOf)
 }
 
+/**
+ * The first code row, which is the one content row that is not the header.
+ *
+ * Its own traversal rather than a number a caller re-derives, because
+ * `codeColorsOf` and the "uncoloured piece" test both need the same element and
+ * two ways of reaching it are two ways to drift apart.
+ */
+function codeRowOf(element: any): any {
+  return contentChildrenOf(element)[1]
+}
+
 /** The colours a row's own pieces carry, in order, so highlighting is assertable. */
 function codeColorsOf(element: any): (string | undefined)[] {
-  const row = elements(element?.props?.children)[1]
+  const row = codeRowOf(element)
   // The first span is the gutter, which is dim by design and carries no code.
   return elements(row?.props?.children)
     .filter((child: any) => child.type === "span")
@@ -201,6 +237,22 @@ describe("FileViewer", () => {
     // The count is the reader's own: a header claiming more lines than were
     // read is the "wrong number in the header" readForView refuses to produce.
     expect(header).toContain("of 5")
+  })
+
+  it("gives the header alone, with no rows glued on after it", () => {
+    /*
+     * Every header assertion above is a `toContain`, and that is what lets a
+     * broken `headerOf` pass all of them.
+     *
+     * The traversal this file had before master's `19f6f38` stopped one level
+     * short of the column the rows live in, and `textOf` follows children
+     * recursively -- so it returned the header's text concatenated with every
+     * row beneath it. `toContain` cannot tell the difference, so no header test
+     * failed, and the helper was quietly returning a string no header is. This
+     * pins it exactly so the fix is load-bearing rather than merely correct.
+     */
+    const path = makeFile("notes.txt", "one\ntwo\nthree\n")
+    expect(headerOf(mount(path, 2))).toBe("notes.txt  1-2 of 3")
   })
 
   it("says so when the file was truncated", () => {
@@ -241,7 +293,11 @@ describe("FileViewer", () => {
 
     expect(rowsOf(element)).toEqual(["1 │ alpha", "2 │ beta"])
     // No grammar means no colour at all, so every piece inherits the theme
-    // default rather than picking one out of the table.
+    // default rather than picking one out of the table. The count is here
+    // because `.every` on an empty array is vacuously true: without it, a
+    // `codeColorsOf` that had lost the row entirely would pass below by
+    // returning nothing and proving nothing.
+    expect(codeColorsOf(element).length).toBeGreaterThan(0)
     expect(codeColorsOf(element).every((color) => color === undefined)).toBe(true)
   })
 
@@ -262,8 +318,7 @@ describe("FileViewer", () => {
     // omitting the key is simpler and matches what the constructor produced.
     const path = makeFile("a.ts", "const value = 1\n")
     const element = mount(path, 5)
-    const row = elements(element?.props?.children)[1]
-    const pieces = elements(row?.props?.children)
+    const pieces = elements(codeRowOf(element)?.props?.children)
       .filter((child: any) => child.type === "span")
       .slice(1)
 
@@ -279,7 +334,7 @@ describe("FileViewer", () => {
   it("never wraps a row, truncating at its own width instead", () => {
     const path = makeFile("f.txt", "one\ntwo\n")
     const element = mount(path, 5)
-    for (const child of elements(element.props.children)) {
+    for (const child of contentChildrenOf(element)) {
       expect(child.props.wrapMode).toBe("none")
       expect(child.props.truncate).toBe(true)
     }
@@ -473,25 +528,6 @@ const mdTheme = { markdown: { heading: rgba("#e06c75") } }
 const WIDE_TERMINAL = 120
 
 /**
- * The content column, which is what the viewer's markup actually puts its rows in.
- *
- * The root is `<box flexDirection="row" justifyContent="center">` wrapping a
- * `<box flexDirection="column">`, so the header and the rows are the *grandchildren*
- * of whatever the component returned. Every helper here therefore starts by taking
- * this step, and none of them reaches past it.
- *
- * Not a fix for the older helpers in this file, which still assume the rows hang
- * off the root and are therefore reporting empty results on every markdown test.
- * That is the pre-existing failure in this file, it predates this task, and it is
- * left alone deliberately -- see the note above `elements` in this file's history.
- * These are new helpers for new tests, and they walk the tree the markup really
- * produces.
- */
-function contentColumnOf(element: any): any {
-  return elements(element?.props?.children).find((child: any) => child.type === "box")
-}
-
-/**
  * Mounts a file and, optionally, the heading state the viewer handed the keymap.
  *
  * `onHeadings` is captured rather than asserted on directly because it is the
@@ -643,7 +679,7 @@ describe("a markdown file", () => {
   it("leaves code files on the Prism path", () => {
     const path = makeFile("a.ts", "const a = 1\n")
     const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
-    const children = elements(element?.props?.children)
+    const children = contentChildrenOf(element)
     expect(children.some((child: any) => child.type === MarkdownContentView)).toBe(false)
     expect(children.some((child: any) => child.type === "scrollbox")).toBe(false)
     expect(rowsOf(element)).toEqual(["1 │ const a = 1"])
@@ -709,6 +745,15 @@ describe("a markdown file", () => {
      * The re-mount below is what stands in for the reconciler re-reading that
      * JSX, and it is what separates a live read from a value snapshotted when
      * the body first ran.
+     *
+     * The bound is read off the content column rather than off the root. When
+     * this test was written the markdown branch returned one box that carried
+     * `height` itself; `19f6f38` put a centring `<box flexDirection="row">`
+     * around the columns and moved the height down onto them, so the root has no
+     * extent of its own and asserting on it would assert nothing. The content
+     * column is the box the scrollbox lives in, and it is the one whose height
+     * bounds the viewport. The sidebar carries the same height when there is one
+     * -- pinned in "gives the sidebar the panel's full height" below.
      */
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     const renderer = createMockRenderer()
@@ -722,21 +767,18 @@ describe("a markdown file", () => {
     }
 
     const element = (FileViewer as any)(props)
-    expect(element.props.height).toBe(12)
+    expect(contentColumnOf(element).props.height).toBe(12)
     // The other half of the bound. Either alone leaves the viewport
     // undetermined: a height with no grow gives a fixed box that may not fill
     // the panel, and a grow with no height gives a box with no measured extent.
-    const scrollbox = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+    const scrollbox = scrollboxIn(element)
     expect(scrollbox?.props.flexGrow).toBe(1)
 
     setHeight(5)
     const resized = (FileViewer as any)(props)
 
-    expect(resized.props.height).toBe(5)
-    const resizedBox = elements(resized?.props?.children).find(
-      (child: any) => child.type === "scrollbox",
-    )
-    expect(resizedBox?.props.flexGrow).toBe(1)
+    expect(contentColumnOf(resized).props.height).toBe(5)
+    expect(scrollboxIn(resized)?.props.flexGrow).toBe(1)
   })
 
   it("keeps the header's row out of the scrollbox's shrink", () => {
@@ -760,7 +802,7 @@ describe("a markdown file", () => {
      */
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
     const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
-    const children = elements(element?.props?.children)
+    const children = contentChildrenOf(element)
 
     const header = children.find((child: any) => child.type === "text")
     const scrollbox = children.find((child: any) => child.type === "scrollbox")
