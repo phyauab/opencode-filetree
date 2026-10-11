@@ -13,40 +13,108 @@ import { marked, type Token, type Tokens } from "marked"
  * the renderer to lay it out and for the TOC to extract heading positions.
  */
 
-/** The block types this parser produces, corresponding to marked's token types. */
-export type BlockType =
-  | "heading"
-  | "paragraph"
-  | "code"
-  | "list"
-  | "blockquote"
-  | "table"
-  | "hr"
-  | "html"
+/** Fields present on every block. */
+interface BlockBase {
+  /** Raw markdown source of the block, exactly as it appeared in the document. */
+  raw: string
+}
+
+/** A heading: `# Title`. */
+export interface HeadingBlock extends BlockBase {
+  type: "heading"
+  /** Heading level 1–6, corresponding to `#` through `######`. */
+  level: number
+  /** Raw inline markdown of the heading content, e.g. `"Hello **World**"`. */
+  text: string
+  /** Inline tokens of the heading content. */
+  tokens: Token[]
+}
+
+/** A paragraph of text. */
+export interface ParagraphBlock extends BlockBase {
+  type: "paragraph"
+  /** Inline tokens of the paragraph content. */
+  tokens: Token[]
+}
+
+/** A fenced or indented code block. */
+export interface CodeBlock extends BlockBase {
+  type: "code"
+  /** Raw source code, without the surrounding fence. */
+  text: string
+  /** Fenced code block language; absent for indented code blocks. */
+  lang?: string
+}
+
+/** One list item, flattened out of marked's nested list structure. */
+export interface ListItem {
+  /** Plain text of the item, with inline markdown stripped. */
+  text: string
+  /** Whether the list this item belongs to was ordered (`1. ` rather than `- `). */
+  ordered: boolean
+  /** Nesting depth: 0 for the block's top-level items, 1 and up for sub-lists. */
+  depth: number
+  /** Inline tokens of the item's own text, excluding any nested sub-list. */
+  tokens: Token[]
+}
+
+/** An ordered or unordered list, with any nested sub-lists flattened in. */
+export interface ListBlock extends BlockBase {
+  type: "list"
+  /** Whether the top-level list is ordered; each `ListItem` carries its own flag for nested lists. */
+  ordered: boolean
+  /** Items in document order, including nested sub-list items at a higher `depth`. */
+  items: ListItem[]
+}
+
+/** A blockquote: `> quoted text`. */
+export interface BlockquoteBlock extends BlockBase {
+  type: "blockquote"
+  /** Block-level tokens inside the quote (paragraphs, lists, nested headings). */
+  tokens: Token[]
+}
+
+/** A GFM pipe table. */
+export interface TableBlock extends BlockBase {
+  type: "table"
+  /** Column headings, one per column, as plain text with inline markdown stripped. */
+  header: string[]
+  /** Data rows in document order, each an array of plain-text cells. */
+  rows: string[][]
+}
+
+/** A thematic break: `---`. */
+export interface HrBlock extends BlockBase {
+  type: "hr"
+}
+
+/** A raw HTML block. */
+export interface HtmlBlock extends BlockBase {
+  type: "html"
+  /** Raw HTML source of the block. */
+  text: string
+}
 
 /**
  * One block of a parsed markdown document.
  *
- * `type` and `raw` are always present; the remaining fields are populated
- * according to the block type:
- *
- * - `heading`: `level` (1–6), `text` (plain text content), `tokens` (inline)
- * - `paragraph`: `tokens` (inline)
- * - `code`: `text` (raw source), `lang` (fenced language, if any)
- * - `list`: `items` (one entry per list item, each with inline `tokens`)
- * - `blockquote`: `tokens` (nested block tokens)
- * - `table`: `header` (column headings), `rows` (data rows)
- * - `hr`: no additional fields
- * - `html`: `text` (raw HTML source)
+ * A discriminated union: narrowing on `block.type` exposes exactly the fields
+ * that block type carries, so reading `block.level` on a paragraph (or
+ * `block.items` on a heading) is a compile error rather than a silent
+ * `undefined`.
  */
-export interface MarkdownBlock {
-  type: BlockType
-  level?: number
-  text?: string
-  lang?: string
-  tokens?: Token[]
-  raw: string
-}
+export type MarkdownBlock =
+  | HeadingBlock
+  | ParagraphBlock
+  | CodeBlock
+  | ListBlock
+  | BlockquoteBlock
+  | TableBlock
+  | HrBlock
+  | HtmlBlock
+
+/** The block types this parser produces, corresponding to marked's token types. */
+export type BlockType = MarkdownBlock["type"]
 
 /** Heading information extracted from a parsed document, for the TOC sidebar. */
 export interface HeadingInfo {
@@ -100,21 +168,24 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
  *
  * The heading text is extracted from inline tokens via `renderInline` to
  * strip markdown syntax (`**`, `` ` ``, etc.) — the TOC shows plain text.
+ * Headings with no content (`#`) are skipped so the TOC gets no blank entries.
+ *
+ * Only top-level blocks are scanned: headings nested inside a blockquote or a
+ * list item are not extracted.
  */
 export function extractHeadings(blocks: MarkdownBlock[]): HeadingInfo[] {
   const headings: HeadingInfo[] = []
 
   for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i]!
-    if (block.type === "heading" && block.level !== undefined && block.tokens !== undefined) {
-      const spans = renderInline(block.tokens)
-      const text = spans.map((s) => s.text).join("")
-      headings.push({
-        text,
-        level: block.level,
-        blockIndex: i,
-      })
-    }
+    const block = blocks[i]
+    if (block.type !== "heading") continue
+    const text = plainText(block.tokens)
+    if (text.trim() === "") continue
+    headings.push({
+      text,
+      level: block.level,
+      blockIndex: i,
+    })
   }
 
   return headings
@@ -130,14 +201,24 @@ export function extractHeadings(blocks: MarkdownBlock[]): HeadingInfo[] {
  * `code` tokens become spans with `code: true`; `link` tokens carry the
  * `href` in the `link` field; `strong` and `em` set `bold` and `italic`
  * respectively; `del` is treated as plain text (strikethrough is not yet
- * rendered distinctly).
+ * rendered distinctly). `image` tokens contribute their alt text, and inline
+ * `html` tokens contribute their raw markup. `text` tokens that nest further
+ * tokens (marked's list-item wrapper) are unwrapped rather than emitted raw.
  */
 export function renderInline(tokens: Token[]): InlineSpan[] {
   const spans: InlineSpan[] = []
 
   for (const token of tokens) {
     if (token.type === "text") {
-      spans.push({ text: (token as Tokens.Text).text })
+      const text = token as Tokens.Text
+      // Inside a list item, marked wraps the item's parsed inline tokens in a
+      // text token whose own `text` is still raw markdown. The nested tokens
+      // are the authoritative content, so recurse into them when present.
+      if (text.tokens && text.tokens.length > 0) {
+        spans.push(...renderInline(text.tokens))
+      } else {
+        spans.push({ text: text.text })
+      }
     } else if (token.type === "strong") {
       const inner = renderInline((token as Tokens.Strong).tokens)
       for (const span of inner) spans.push({ ...span, bold: true })
@@ -158,19 +239,75 @@ export function renderInline(tokens: Token[]): InlineSpan[] {
     } else if (token.type === "escape") {
       spans.push({ text: (token as Tokens.Escape).text })
     } else if (token.type === "image") {
-      // Images have no text content to render inline; the alt text is the
-      // closest analogue but is already part of the surrounding text flow.
-      continue
+      // Images render as their alt text inline; the image itself is not drawn.
+      spans.push({ text: (token as Tokens.Image).text })
     } else if (token.type === "html") {
       spans.push({ text: (token as Tokens.HTML).text })
-    } else if (token.type === "tag") {
-      // Inline HTML tag inside a paragraph; skip the tag itself but keep any
-      // text tokens that follow in the same parent.
-      continue
     }
   }
 
   return spans
+}
+
+/**
+ * Flattens inline tokens to plain text, stripping markdown syntax.
+ *
+ * Used wherever the consumer wants words rather than markup: TOC entries, list
+ * item text, and table cells.
+ */
+function plainText(tokens: Token[]): string {
+  return renderInline(tokens)
+    .map((span) => span.text)
+    .join("")
+}
+
+/**
+ * Flattens a marked list token into `ListItem`s, recursing into sub-lists.
+ *
+ * marked nests a sub-list as a `list` token inside the parent item's tokens.
+ * Each sub-list item becomes a further `ListItem` with an incremented `depth`
+ * and its own `ordered` flag, so a renderer can pick markers and indentation
+ * without re-parsing `raw`.
+ */
+function collectListItems(list: Tokens.List, depth: number): ListItem[] {
+  const items: ListItem[] = []
+
+  for (const item of list.items) {
+    const tokens = listItemInlineTokens(item)
+    items.push({ text: plainText(tokens), ordered: list.ordered, depth, tokens })
+    for (const token of item.tokens) {
+      if (token.type === "list") {
+        items.push(...collectListItems(token as Tokens.List, depth + 1))
+      }
+    }
+  }
+
+  return items
+}
+
+/**
+ * Extracts a list item's own inline tokens.
+ *
+ * A tight item holds `text` tokens directly, a loose item holds `paragraph`
+ * tokens whose inline tokens are spliced in; the `space` token between those
+ * paragraphs becomes a newline so multi-paragraph items do not run together.
+ * Nested `list` tokens are dropped: they are represented by the deeper
+ * `ListItem`s from `collectListItems`.
+ */
+function listItemInlineTokens(item: Tokens.ListItem): Token[] {
+  const tokens: Token[] = []
+
+  for (const token of item.tokens) {
+    if (token.type === "text") {
+      tokens.push(token)
+    } else if (token.type === "paragraph") {
+      tokens.push(...(token as Tokens.Paragraph).tokens)
+    } else if (token.type === "space") {
+      tokens.push({ type: "text", raw: token.raw, text: "\n" })
+    }
+  }
+
+  return tokens
 }
 
 /**
@@ -212,6 +349,8 @@ function tokenToBlock(token: Token): MarkdownBlock | null {
       const t = token as Tokens.List
       return {
         type: "list",
+        ordered: t.ordered,
+        items: collectListItems(t, 0),
         raw: t.raw,
       }
     }
@@ -227,6 +366,8 @@ function tokenToBlock(token: Token): MarkdownBlock | null {
       const t = token as Tokens.Table
       return {
         type: "table",
+        header: t.header.map((cell) => plainText(cell.tokens)),
+        rows: t.rows.map((row) => row.map((cell) => plainText(cell.tokens))),
         raw: t.raw,
       }
     }
