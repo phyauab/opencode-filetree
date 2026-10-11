@@ -5,10 +5,11 @@ import { FileTree } from "./FileTree"
 import { createTreeState } from "./store"
 import { createTreeCommands, promptSession } from "./commands"
 import type { DirEntry } from "./fileSystem"
-import { FileViewer, VIEWER_ROWS_CHROME } from "./viewer/FileViewer"
+import { FileViewer, VIEWER_ROWS_CHROME, type HeadingState } from "./viewer/FileViewer"
 import { isMarkdown } from "./viewer/markdown"
 import { readForView } from "./viewer/readForView"
 import { scrollByLine, scrollByPage } from "./viewer/scroll"
+import { findNextHeading, findPrevHeading } from "./viewer/toc"
 import { trace } from "./trace"
 
 /**
@@ -112,6 +113,31 @@ export default Plugin.define({
      * no value written from here can put the window outside the file.
      */
     let setViewerScroll: Setter<number> | undefined
+
+    /**
+     * What the viewer knows about its document's headings, or `undefined` when
+     * the file on screen has none to know about.
+     *
+     * Getters rather than a snapshot, for the reason `HeadingState` documents:
+     * the positions are replaced whenever the layout recomputes -- a resize
+     * re-wraps the document and every row below the change moves -- so a map
+     * captured when the panel opened would have the keymap scrolling to a row
+     * from the width the reader no longer has. A keypress reads both halves
+     * fresh, and always gets the layout that is on screen.
+     *
+     * `undefined` is the markdown gate, and deliberately so rather than a flag
+     * of our own: `FileViewer` calls this only on the markdown path, because a
+     * code file has no headings and handing over an empty map would invite the
+     * keymap to navigate a document with nothing in it to navigate. One piece
+     * of state instead of two is one less thing to keep in step, and the
+     * alternative -- a boolean plus a map -- can disagree the moment a close
+     * clears one and not the other.
+     *
+     * Reset alongside `setViewerScroll`, in `openViewer` and in `closeViewer`,
+     * for the same reason that one is: a keypress must never be able to reach
+     * the state of a viewer that has been torn down.
+     */
+    let viewerHeadings: HeadingState | undefined
 
     /**
      * Rows the viewer may spend on file content.
@@ -231,6 +257,7 @@ export default Plugin.define({
       const file = readForView(entry.path)
       setViewerOpen(false)
       setViewerScroll = undefined
+      viewerHeadings = undefined
       setViewerPath(entry.path)
       /*
        * Markdown renders as blocks, so its rendered height is not its line count
@@ -275,6 +302,7 @@ export default Plugin.define({
      */
     const closeViewer = () => {
       setViewerScroll = undefined
+      viewerHeadings = undefined
       setViewerOpen(false)
       // Release the tree's key claim so the nav layer goes inert the moment the
       // viewer closes. Without this, `keysHeld` stays true and the nav layer
@@ -298,6 +326,63 @@ export default Plugin.define({
     const scrollViewer = (rows: number, step: (prev: number) => number) => {
       setViewerScroll?.((prev) => step(prev))
       trace("viewer.scroll", { rows, lines: viewerLines(), open: viewerOpen() })
+    }
+
+    /*
+     * Jump to a heading's row, or do nothing at all.
+     *
+     * The row arithmetic is not here and is never done here. `FileViewer` hands
+     * over getters onto the layout's own map, and the only thing this function
+     * does with a row is hand it to the writer the viewer also handed over --
+     * unmodified, with no adjustment of any kind. It is 0-based and it is the
+     * row the heading's own text is drawn on, so the reader who lands there is
+     * looking at the heading they asked for. A `-1` because "one row up reads
+     * nicer" puts every jump one row off, which is the class of bug that got
+     * the first table of contents reverted.
+     *
+     * `null` from the finders is a real answer rather than an error: there is no
+     * next heading, or no previous one. The scrollbox is not written and no frame
+     * is asked for, because nothing changed -- a keypress at the end of the
+     * document that moved a row would be a lie about where the reader is.
+     *
+     * `active` may be `-1`, which means "no heading is active" and is NOT a key
+     * in the map. It is only ever *handed to* the finders, which answer an index
+     * that is not in the map rather than looking one up, so nothing here reads
+     * `positions.get(-1)` -- see `findNextHeading`'s own comment for why that is
+     * the contract it wants.
+     */
+    const jumpToHeading = (step: "next" | "previous") => {
+      // Gated on the viewer having handed a state over at all, which is the
+      // markdown path. A code file never gets here, so `alt+down` over a `.ts`
+      // file is inert rather than navigating a document with no headings.
+      const state = viewerHeadings
+      if (!state) return
+      /*
+       * Both halves read at the moment of the keypress. The positions are
+       * replaced on every layout and the active heading moves with every
+       * scroll, so a value read once when the panel opened would describe the
+       * document as it was then -- and after a resize that is a different
+       * document.
+       */
+      const positions = state.positions()
+      // An empty map is a markdown file with no headings in it, which the layout
+      // hands over before it has laid anything out. Nothing to jump between.
+      if (positions.size === 0) return
+      const active = state.active()
+      const index = step === "next" ? findNextHeading(positions, active) : findPrevHeading(positions, active)
+      if (index === null) return
+      const row = positions.get(index)
+      if (row === undefined) return
+      /*
+       * Through the same writer the arrows use, so there is one path to the
+       * scrollbox and not two that can disagree. On the markdown path that is
+       * the viewer's own adapter, which drives the renderable, reads the clamped
+       * result back off it and asks for the frame -- so a jump near the end of
+       * the document lands on the last legal row rather than somewhere wrong,
+       * and the sidebar's highlight follows what really happened.
+       */
+      setViewerScroll?.(() => row)
+      trace("viewer.heading", { step, index, row })
     }
 
     const tree = createTreeCommands({
@@ -425,9 +510,14 @@ export default Plugin.define({
             // The viewer's own writer, held so the keymap can move the offset
             // without owning it. Reset on every open so a keypress can never
             // reach the writer of a viewer that has been torn down.
-            //
             scrollTo={(setOffset: Setter<number>) => {
               setViewerScroll = setOffset
+            }}
+            // Where the document's headings are, so the keymap can jump between
+            // them. The viewer calls this on the markdown path only, which is
+            // what makes its absence the markdown gate -- see `viewerHeadings`.
+            onHeadings={(state: HeadingState) => {
+              viewerHeadings = state
             }}
           />
         )
@@ -660,6 +750,36 @@ export default Plugin.define({
                 scrollViewer(rows, (prev) => scrollByPage(prev, -1, viewerLines(), rows))
               },
             },
+            /*
+             * alt+down / alt+up move between sections rather than between rows.
+             *
+             * The arrows step the window; these jump it, which is the difference
+             * between reading a long document a line at a time and getting to the
+             * section you want. Bound with alt because the plain arrows are the
+             * line step and rebinding those would take away the fine-grained
+             * movement -- and the sidebar is only a convenience, so the keyboard
+             * has to be able to do this without it.
+             *
+             * Both are no-ops unless the file on screen is markdown, which is
+             * `viewerHeadings` having been handed a state. Nothing else is
+             * checked: not the renderer's focus, because the host re-asserts
+             * that on the prompt about a second after anything takes it, and a
+             * focus-derived gate is a gate that flaps. The layer's own
+             * `enabled: () => viewerOpen()` is the only other condition, and it
+             * is plugin state for the same reason.
+             */
+            {
+              id: "filetree.viewer.heading.next",
+              title: "File viewer: jump to next heading",
+              bind: "alt+down",
+              run: () => jumpToHeading("next"),
+            },
+            {
+              id: "filetree.viewer.heading.prev",
+              title: "File viewer: jump to previous heading",
+              bind: "alt+up",
+              run: () => jumpToHeading("previous"),
+            },
             {
               id: "filetree.viewer.close",
               title: "File viewer: close",
@@ -672,6 +792,8 @@ export default Plugin.define({
             "filetree.viewer.up",
             "filetree.viewer.page.down",
             "filetree.viewer.page.up",
+            "filetree.viewer.heading.next",
+            "filetree.viewer.heading.prev",
             "filetree.viewer.close",
           ],
         }

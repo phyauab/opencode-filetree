@@ -62,6 +62,40 @@ const realMarkdown = (lines: number): string => {
 }
 
 /**
+ * A real markdown file whose exact contents are the point.
+ *
+ * Separate from `realMarkdown` because the heading-jump tests need a document
+ * with a known shape -- headings with a single-word paragraph between them, so
+ * each heading is on a row that can be written down. `realMarkdown(lines)` is
+ * for "a markdown file the sentinel has to let scroll" and has no headings in
+ * it at all.
+ */
+const realMarkdownSource = (source: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), "tui-viewer-"))
+  const path = join(dir, "f.md")
+  writeFileSync(path, source)
+  created.push(dir)
+  return path
+}
+
+/**
+ * Three headings, one row of text between each, at the viewer's default width.
+ *
+ * `# One` on row 0, `## Two` on row 4, `### Three` on row 8: heading, blank,
+ * paragraph, blank, then the next heading. Written out because every test below
+ * asserts on these numbers and a reader has to be able to check the arithmetic
+ * by eye. Verified against `layoutBlocks` at 150 columns; the layout's own
+ * arithmetic is pinned in `markdownLayout.test.ts` and `toc.test.ts`, and what
+ * is under test here is what the keymap *does* with the row.
+ */
+const HEADINGS = "# One\n\npara\n\n## Two\n\npara\n\n### Three\n\npara\n"
+const HEADING_ROWS: [number, number][] = [
+  [0, 0],
+  [1, 4],
+  [2, 8],
+]
+
+/**
  * Every object in a stub `children` prop, however deeply nested.
  *
  * The same walk `FileViewer.test.ts`'s `elements` does, restated because a test
@@ -72,6 +106,33 @@ const realMarkdown = (lines: number): string => {
 function childElements(children: unknown): any[] {
   const list = Array.isArray(children) ? children.flat(Infinity) : [children]
   return list.filter((child): child is any => Boolean(child) && typeof child === "object")
+}
+
+/**
+ * The first element anywhere in a stub tree that matches, however deep it is.
+ *
+ * A flat walk over one `children` array is not enough since the viewer grew a
+ * centring box and a content column: on the markdown path what a test needs is
+ * three levels down, inside `<box row>` -> `<box column>` -> `<scrollbox>`. The
+ * shallow search returns `undefined` for a tree that plainly contains what it
+ * was looking for, which is how `scrollbox()` below came to report `undefined`
+ * on the markdown path while the file it describes was being drawn.
+ *
+ * Breadth-first, so the outermost match wins. There is one scrollbox in the
+ * tree and one content component in it, but a search that found the deeper of
+ * two would be a search whose answer depends on a nesting depth nobody
+ * declared.
+ */
+function deepFind(children: unknown, match: (element: any) => boolean): any {
+  const level = childElements(children)
+  for (const element of level) {
+    if (match(element)) return element
+  }
+  for (const element of level) {
+    const found = deepFind(element.props?.children, match)
+    if (found) return found
+  }
+  return undefined
 }
 
 /**
@@ -385,8 +446,23 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
          * reconciler hands a ref. `undefined` on the text path, which has no
          * scrollbox to hand anything to.
          */
-        scrollbox: () =>
-          childElements(root?.props?.children).find((child: any) => child.type === "scrollbox"),
+        scrollbox: () => deepFind(root?.props?.children, (child: any) => child.type === "scrollbox"),
+        /**
+         * The rendered markdown layout component, so a test can hand over
+         * heading positions the way the layout does.
+         *
+         * The stub builds the tree as a description and never runs the
+         * component, so `onHeadingPositions` does not fire by itself: the
+         * viewer's own signal stays on its seeded empty map until a test calls
+         * this. That is the same reason `FileViewer.test.ts` has a
+         * `renderContentView`, restated here because a test file cannot import
+         * another one.
+         */
+        markdownContent: () =>
+          deepFind(
+            root?.props?.children,
+            (child: any) => typeof child.props?.onHeadingPositions === "function",
+          ),
       }
     },
     /** Is the viewer layer live right now? */
@@ -973,6 +1049,8 @@ describe("plugin entry (sidebar spike)", () => {
       "up",
       "pagedown",
       "pageup",
+      "alt+down",
+      "alt+up",
       "escape",
     ])
   })
@@ -1238,5 +1316,286 @@ describe("plugin entry (sidebar spike)", () => {
     const cleanup = await mod.setup(context)
     await cleanup?.()
     expect(unregistered).toBe(true)
+  })
+})
+
+/*
+ * `alt+down` / `alt+up` on the viewer layer.
+ *
+ * The feature in one sentence: the keymap asks the layout where a heading is,
+ * and hands that row to the scroll writer the viewer already gave it --
+ * unchanged. Every test below is a way of nailing down "unchanged", or "only
+ * when it should".
+ *
+ * Two things are load-bearing and both are pinned hard, because both are the
+ * bug class this whole seam exists to prevent:
+ *
+ *   - The row is not adjusted on the way through. It is 0-based and it is the
+ *     row the heading's own text is drawn on, so any "looks nicer" correction
+ *     here is the off-by-N the first table of contents shipped. `asked` records
+ *     the raw number handed to the writer, so an adjustment fails a test rather
+ *     than reading as an improvement.
+ *   - The positions are read at the moment of the keypress, because the layout
+ *     replaces its map every time it recomputes.
+ */
+describe("jumping between sections in the markdown viewer", () => {
+  /**
+   * A markdown file open in the viewer, with headings laid out.
+   *
+   * Returns everything a jump can be observed doing from the outside: the mock
+   * context, the raw numbers handed to the scroll writer, and the fake scrollbox
+   * they landed on. The fake transcribes the host's own clamp (see
+   * `fakeScrollBox`), so the bound under test in the overshoot case is the bound
+   * the plugin really meets rather than one this file asserts.
+   *
+   * The positions go in through `MarkdownContentView`'s `onHeadingPositions`,
+   * which is the only writer the viewer's signal has. Routing around it would
+   * test a path production never takes, and the stub never invokes the
+   * component itself -- which is the same reason `FileViewer.test.ts` has a
+   * `renderContentView`, restated here because a test file cannot import
+   * another one.
+   */
+  async function headingFixture(
+    positions: [number, number][],
+    source = HEADINGS,
+    box: { scrollTop?: number; scrollSize?: number; viewportSize?: number } = {},
+  ) {
+    const { default: mod } = await import("./tui")
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.md", path: realMarkdownSource(source), isDirectory: false }])
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+    const asked: number[] = []
+    const scrollbox = fakeScrollBox(
+      box.scrollTop ?? 0,
+      box.scrollSize ?? 400,
+      box.viewportSize ?? 38,
+      asked,
+    )
+    viewer.scrollbox()!.props.ref(scrollbox)
+    viewer.markdownContent()!.props.onHeadingPositions(new Map(positions))
+
+    return { m, state, viewer, asked, scrollbox }
+  }
+
+  itRender("binds alt+down and alt+up to jump between sections, on the viewer layer", async () => {
+    const { default: mod } = await import("./tui")
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    const viewer = m.viewerLayer()
+    const next = viewer.commands.find((c: any) => c.id === "filetree.viewer.heading.next")
+    const previous = viewer.commands.find((c: any) => c.id === "filetree.viewer.heading.prev")
+
+    expect(next?.bind).toBe("alt+down")
+    expect(previous?.bind).toBe("alt+up")
+    // On the viewer layer, whose `enabled` is `viewerOpen()` -- plugin state, not
+    // renderer focus, because the host re-asserts focus on the prompt about a
+    // second after anything takes it and a focus gate would flap.
+    expect(viewer.priority).toBe(20)
+    expect(m.viewerEnabled()).toBe(false)
+    expect(viewer.bindings).toContain("filetree.viewer.heading.next")
+    expect(viewer.bindings).toContain("filetree.viewer.heading.prev")
+  })
+
+  itRender("alt+down scrolls to the next heading's row and nothing else", async () => {
+    const { m, state, viewer, asked, scrollbox } = await headingFixture(HEADING_ROWS)
+
+    m.command("filetree.viewer.heading.next")!.run()
+
+    // `## Two` is on row 4. Asked for as it stands: not 3, which would land
+    // above the heading, and not 5, which would land on the blank row under
+    // the paragraph that follows it.
+    expect(asked).toEqual([4])
+    expect(scrollbox.scrollTop).toBe(4)
+    expect(viewer.written).toEqual([4])
+
+    // And again from row 4, which is `## Two`'s own row: `### Three` is on 8.
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4, 8])
+
+    // The jump is the viewer moving. The tree's cursor, its expansion, the
+    // session and the panel itself are all untouched.
+    expect(state.cursor()).toBe(0)
+    expect([...state.expanded()]).toEqual([])
+    expect(m.prompts).toEqual([])
+    expect(m.panelCalls.filter((p) => p.action === "open")).toHaveLength(1)
+  })
+
+  itRender("alt+up scrolls to the previous heading's row", async () => {
+    const { m, asked, scrollbox } = await headingFixture(HEADING_ROWS)
+
+    m.command("filetree.viewer.heading.next")!.run()
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4, 8])
+    expect(scrollbox.scrollTop).toBe(8)
+
+    m.command("filetree.viewer.heading.prev")!.run()
+    expect(asked).toEqual([4, 8, 4])
+
+    m.command("filetree.viewer.heading.prev")!.run()
+    expect(asked).toEqual([4, 8, 4, 0])
+  })
+
+  itRender("a jump with nowhere to go moves nothing at all", async () => {
+    const { m, viewer, asked } = await headingFixture(HEADING_ROWS)
+
+    // At the top of the document there is no previous heading. `null` from the
+    // finder is a real answer -- it is what tells the keymap the key has nothing
+    // to do -- and the scrollbox is left exactly where it was.
+    m.command("filetree.viewer.heading.prev")!.run()
+    expect(asked).toEqual([])
+    expect(viewer.written).toEqual([])
+
+    // Down to the last heading, then one more press.
+    m.command("filetree.viewer.heading.next")!.run()
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4, 8])
+
+    m.command("filetree.viewer.heading.next")!.run()
+
+    // Nothing asked, nothing written, nothing thrown. No state changed, so
+    // nothing asked the renderer for a frame either -- a keypress at the end of
+    // the document that moved a row would be a lie about where the reader is.
+    expect(asked).toEqual([4, 8])
+    expect(viewer.written).toEqual([4, 8])
+  })
+
+  itRender("asks for the row it was given even when the scrollbar clamps it", async () => {
+    // A document whose heading sits below the scrollable range, which is what a
+    // heading near the end of a long file is. The row goes over unmodified and
+    // the renderable's own clamp decides what is legal, so the ask is the
+    // layout's number and the landing is the host's.
+    const { m, asked, scrollbox } = await headingFixture(
+      [
+        [0, 0],
+        [1, 400],
+      ],
+      HEADINGS,
+      { scrollSize: 400, viewportSize: 38 },
+    )
+
+    m.command("filetree.viewer.heading.next")!.run()
+
+    // 400, not 399: an off-by-one would still land somewhere legal here, and
+    // that is exactly why the ask itself is what gets asserted.
+    expect(asked).toEqual([400])
+    // The host's clamp, not ours: `scrollSize - viewportSize`, 400 - 38.
+    expect(scrollbox.scrollTop).toBe(362)
+  })
+
+  itRender("reads the layout when the key is pressed, not when the panel opened", async () => {
+    // 150 columns puts `## Two` on row 4; a narrower wrap puts it lower. A
+    // snapshot taken when the panel opened would still say 4 and land four rows
+    // above the heading it names.
+    const source = "# One\n\naaa bbb ccc ddd eee fff ggg hhh iii jjj\n\n## Two\n\nmore\n"
+    const { m, asked, viewer } = await headingFixture(
+      [
+        [0, 0],
+        [1, 4],
+      ],
+      source,
+    )
+
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4])
+
+    // The resize: the layout recomputes and hands over a fresh map.
+    viewer.markdownContent()!.props.onHeadingPositions(
+      new Map([
+        [0, 0],
+        [1, 9],
+      ]),
+    )
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4, 9])
+  })
+
+  itRender("a heading state of -1 jumps to the first heading instead of nowhere", async () => {
+    /*
+     * `findActiveHeading` answers -1 for "no heading is active", and -1 is not
+     * a key in the positions map. It is only ever *handed to* the finders, which
+     * answer with the closest index that is in the map -- so the keymap jumps to
+     * the top of the document rather than doing nothing or, worse, looking up
+     * `positions.get(-1)` and landing wherever `undefined` puts it.
+     *
+     * The reachable route to -1 is an offset of NaN. `markdownOffset` reads
+     * `scrollTop` and hands NaN through rather than guessing, and
+     * `findActiveHeading` treats NaN as "no position at all" rather than as an
+     * offset above every heading -- which would have named the *last* heading of
+     * a document the reader is looking at the top of. The box is put into that
+     * state directly because no keypress reaches it; this repo has already
+     * shipped one panel whose scroll position was NaN.
+     */
+    const { m, asked, scrollbox, viewer } = await headingFixture(HEADING_ROWS)
+    scrollbox.scrollTop = Number.NaN
+
+    m.command("filetree.viewer.heading.next")!.run()
+
+    // Heading 0, on row 0. `positions.get(-1)` would have been `undefined`, and
+    // a keypress that landed on `undefined` would have moved the reader
+    // somewhere arbitrary -- which is the failure this pins.
+    expect(asked).toEqual([0])
+    expect(scrollbox.scrollTop).toBe(0)
+
+    // And the mirror: above the first heading there is no previous one.
+    m.command("filetree.viewer.heading.prev")!.run()
+    expect(asked).toEqual([0])
+    expect(viewer.written).toEqual([0])
+  })
+
+  itRender("a jump over a code file does nothing at all", async () => {
+    const { default: mod } = await import("./tui")
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+    state.setEntries([{ name: "f.ts", path: realFile(200), isDirectory: false }])
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    const viewer = m.viewerOffsets()
+
+    // The writer IS set on this path -- the arrows scroll a code file fine --
+    // so what is being tested is the heading gate and not the absence of a
+    // writer. `FileViewer` calls `onHeadings` on the markdown path only, so
+    // there is no state to navigate with.
+    expect(viewer.writer()).toBeDefined()
+
+    m.command("filetree.viewer.heading.next")!.run()
+    m.command("filetree.viewer.heading.prev")!.run()
+
+    expect(viewer.written).toEqual([])
+  })
+
+  itRender("a markdown file with no headings laid out has nothing to jump between", async () => {
+    // The seeded empty map, which is what the viewer holds before
+    // `MarkdownContentView` has laid anything out. A document with no headings
+    // in it and a document whose layout has not run are the same thing to the
+    // keymap, for the same reason they are the same thing to the sidebar.
+    const { m, viewer, asked } = await headingFixture([])
+
+    m.command("filetree.viewer.heading.next")!.run()
+    m.command("filetree.viewer.heading.prev")!.run()
+
+    expect(asked).toEqual([])
+    expect(viewer.written).toEqual([])
+  })
+
+  itRender("a keypress after the viewer closes cannot reach its headings", async () => {
+    const { m, viewer } = await headingFixture(HEADING_ROWS)
+
+    m.command("filetree.viewer.close")!.run()
+    m.command("filetree.viewer.heading.next")!.run()
+
+    // Belt and braces beside `setViewerScroll`, cleared by the same close: the
+    // state of a viewer that has been torn down must not be reachable, and
+    // nothing that happens between this close and the next open should move a
+    // window. Either flag alone would hold this; both are cleared together so
+    // there is no keypress that reaches one without the other.
+    expect(viewer.written).toEqual([])
   })
 })
