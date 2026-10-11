@@ -363,7 +363,7 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
     dialogs,
     panelCalls,
     allCommands,
-    /** What the last `storage.store` call was handed, or asked for. */
+    /** The live value a `storage.store` key was initialised with, plus anything written since. */
     stored: (key: string) => stores.get(key),
     /** What the reader types into the next input dialog. */
     answerDialog: (value: string) => dialogAnswers.push(value),
@@ -1377,9 +1377,9 @@ describe("plugin entry (sidebar spike)", () => {
   })
 
   itRender("toasts instead of persisting a width that is not a number", async () => {
-    // `Number("abc")` is NaN and `Number("-4")` is fine as a number and useless
-    // as a width, so the guard has to reject both; persisting either would leave
-    // the viewer unbounded or negative on the next open.
+    // `Number("abc")` is NaN, and `Number("0")` is a number that is no width at
+    // all -- persisting either would leave the viewer unbounded or negative on
+    // the next open, and the guard has to reject both.
     const { default: mod } = await load()
     const m = createMockContext()
     await mod.setup(m.context)
