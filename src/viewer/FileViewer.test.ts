@@ -150,7 +150,8 @@ function elements(children: unknown): any[] {
  * ("feat: make viewer width configurable via command palette") added that
  * centring box and never told this file, so the four helpers below each searched
  * one flat `children` level, found the centring box where they expected the
- * header, and reported empty results on every test that needed the rows.
+ * header or the rows, and came back with nothing. Twenty-one tests failed on the
+ * shape of the tree rather than on anything the viewer draws.
  *
  * Every helper in this file therefore takes this step first and searches inside
  * the content column afterwards. It is the single implementation of that
@@ -1627,11 +1628,13 @@ describe("a terminal that changes width", () => {
  * block is the same assertions against the parts as they are actually joined,
  * because a suite of unit answers can all be right while the joins are wrong.
  *
- * The one limit, stated once rather than repeated: the stub's JSX runtime
+ * The stub's limit, stated here rather than in each test: its JSX runtime
  * records `props.children` and never re-runs it, so a signal write cannot reach
- * a tree that is already built. `mountViewer` below paints the component again
- * on demand, which is the same stand-in the resize tests above use, and it is
- * the reason every test here reads through a freshly painted element.
+ * a tree that is already built. `mountViewer` paints the component again on
+ * demand, which is the same stand-in the resize tests above use, and it is the
+ * reason every test here reads through a freshly painted element. It also has a
+ * sharper edge, spelled out in the second test below: no paint can draw the
+ * highlight, so the sidebar's marked row is pinned by the live host alone.
  */
 
 /**
@@ -1644,9 +1647,9 @@ describe("a terminal that changes width", () => {
  * number rather than a snapshot from before the change.
  *
  * `renderContentView` runs inside each paint, the way the host's reconciler
- * would tear down and rebuild the scrollbox's content: without it the layout
- * has handed over no positions, the sidebar has no rows, and half of what this
- * block asserts would be about an empty map.
+ * tears down and rebuilds the scrollbox's content: without it the layout has
+ * handed over no positions at all, the active heading is `-1`, and half of what
+ * this block asserts would be about an empty map.
  */
 function mountViewer(path: string, settings: { terminal: number; height: number; maxWidth?: number }) {
   const renderer = createMockRenderer(settings.terminal)
@@ -1714,23 +1717,23 @@ describe("the table of contents, end to end", () => {
     const viewer = mountViewer(path, { terminal: 120, height: 20 })
 
     /*
-     * The one thing this cannot show, and the reason is worth stating exactly
-     * because it is not the reason the rest of the file gives for it.
+     * The one thing no paint here can show, and the reason is worth stating
+     * exactly because it is not the reason the rest of the file gives for it.
      *
      * No paint can ever draw the highlight. `headingPositions` is a signal the
      * *component* owns, so every paint starts a fresh one at empty, and the
      * only writer -- `MarkdownContentView`'s `onHeadingPositions` -- runs after
-     * the body has already asked `activeHeading()` what to mark. Re-painting
-     * does not help: the second paint's signal is as empty as the first's. The
-     * sidebar is therefore always drawn at `-1`, with every row dim.
+     * the body has already asked `activeHeading()` which row to mark.
+     * Re-painting does not help: the second paint's signal is as empty as the
+     * first's. The sidebar is therefore always drawn at `-1`, every row dim.
      *
      * What is left is the two ends of the join, asserted from both sides: the
      * active heading the keymap would navigate by (`active()`, below), and the
      * row style that the index would be handed to (`tocEntryStyle`, in its own
      * tests). Closing the distance between them needs a real reconciler.
      */
-    const unpainted = viewer.paint()
-    expect(tocRowStyle(unpainted, 1)).toEqual({ fg: "dim" })
+    const firstPaint = viewer.paint()
+    expect(tocRowStyle(firstPaint, 1)).toEqual({ fg: "dim" })
 
     // A second paint, so the layout's own numbers are the ones in play.
     const element = viewer.paint()
@@ -1812,10 +1815,17 @@ describe("the table of contents, end to end", () => {
     const narrowPositions = viewer.headings().positions()
 
     expect(columnsOf(narrow)).toHaveLength(2)
-    // The same three headings, further down: the paragraph between the first
-    // two wrapped onto three rows instead of one.
-    expect(narrowPositions.get(1)).toBeGreaterThan(widePositions.get(1)!)
-    expect(narrowPositions.get(2)).toBeGreaterThan(widePositions.get(2)!)
+    // The same three headings, further down. Thirty-one columns of content is
+    // where the paragraph between the first two wraps onto three rows rather
+    // than one, so `## Two` moves from row 4 to row 6 and `### Three` from 8 to
+    // 12. Written out rather than left as "further down", because the numbers
+    // are what a jump is aimed with and a wrap that moved everything by one row
+    // would pass a relation that only says "greater".
+    expect([...narrowPositions.entries()]).toEqual([
+      [0, 0],
+      [1, 6],
+      [2, 12],
+    ])
     // And the layout is drawing at the narrower width, so this is a re-layout
     // rather than a second map of the same rows.
     expect(contentViewOf(narrow).props.contentWidth).toBe(31)
@@ -1825,9 +1835,9 @@ describe("the table of contents, end to end", () => {
      *
      * Scrolling to the wide layout's row for the last heading lands in the
      * middle of the second section. The expected answer is read out of the new
-     * map rather than written down, and the map itself is checked so the
-     * derivation is visible: the last heading whose row is at or above the
-     * offset, which here is the second one and not the third.
+     * map rather than written down, and the derivation is checked so it cannot
+     * be a tautology: the last heading at or before the offset, which here is
+     * the second one and not the third the stale map would have named.
      */
     const staleRow = widePositions.get(2)!
     const expected = [...narrowPositions.entries()].filter(([, row]) => row <= staleRow).pop()![0]
@@ -1885,9 +1895,9 @@ describe("the table of contents, end to end", () => {
     /*
      * Two columns per level below the first, written out in full rather than
      * generated from the same constant the component uses: a generated
-     * expectation restates the code and passes whatever the code does. The
-     * count is asserted too, because a document with six headings and a
-     * sidebar showing five is the failure this pins.
+     * expectation restates the code and passes whatever the code does. The list
+     * is the whole list, so a document with six headings and a sidebar showing
+     * five is a failure rather than a smaller green.
      */
     expect(tocRowsOf(element)).toEqual([
       "Contents",
