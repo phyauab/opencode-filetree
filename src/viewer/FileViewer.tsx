@@ -364,6 +364,11 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     context.renderer.requestRender()
   })
 
+  // TODO: Heading navigation sidebar — reverted because markdown rendered
+  // positions cannot be reliably mapped to scroll rows. Revisit when a
+  // proper position-mapping mechanism is available (e.g. search-based nav
+  // or a MarkdownRenderable that exposes rendered row positions).
+
   /*
    * One row per line of the file, always. The gutter is a prefix on the same
    * row rather than a row of its own, so a number cannot drift away from the
