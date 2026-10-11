@@ -1021,6 +1021,54 @@ describe("the table of contents beside a markdown file", () => {
     expect(tocOf(mountCapturingHeadings(capped, 20).element).props.width).toBe(40)
   })
 
+  it("follows a scrollbox that something other than the keys moved", () => {
+    /*
+     * The case that separates reading the renderable from mirroring it.
+     *
+     * A mouse wheel over the scrollbox moves it without the adapter running, and
+     * a design that kept its own copy of the offset would still be reporting the
+     * position from before the wheel. Reading `box.scrollTop` at the moment the
+     * question is asked means the answer is right whoever moved it -- which is the
+     * same reason the adapter hands the box an unclamped number and lets the
+     * scrollbar put it back in range.
+     *
+     * The two sides of the box are plain fields precisely so this test can move
+     * it the way the host would. A getter over a `let` would throw here, which is
+     * what it did while this was being written.
+     */
+    const path = makeFile("readme.md", "# One\n\na\n\n## Two\n\nb\n\n### Three\n\nc\n")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+    renderContentView(element)
+    const box = attachScrollbox(element, 0, 400, 20)
+
+    expect(headings().active()).toBe(0)
+    box.scrollTop = 8
+    expect(headings().active()).toBe(2)
+  })
+
+  it("gives an empty markdown file no sidebar and no active heading", () => {
+    // A zero-byte `.md` has no blocks, so no headings, so no sidebar -- and an
+    // active heading of `-1`. The empty positions map is also what a real
+    // document with no headings produces, so this is the same answer for the same
+    // reason rather than a special case.
+    const path = makeFile("empty.md", "")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+
+    expect(elements(element?.props?.children).filter((child: any) => child.type === "box")).toHaveLength(1)
+    expect(headings().active()).toBe(-1)
+  })
+
+  it("stays drawable in a panel with no rows", () => {
+    // `props.height` is zero before the panel has measured itself. The sidebar
+    // still draws its label and at least one heading, because a window of zero
+    // rows is a sidebar with nothing in it and `tocWindowStart` floors at one
+    // rather than starting the window below the heading it was asked to show.
+    const path = makeFile("readme.md", "# One\n\n## Two\n\n### Three\n")
+    const { element } = mountCapturingHeadings(path, 0)
+
+    expect(tocRowsOf(element)).toEqual(["Contents", "One"])
+  })
+
   it("takes the columns it uses out of the content column", () => {
     const path = makeFile("readme.md", "# One\n\ntext\n")
     const { element } = mountCapturingHeadings(path, 20, { renderer: createMockRenderer(120) })

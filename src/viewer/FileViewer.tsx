@@ -743,12 +743,13 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      * is not what paints the rows -- it is what makes *this* effect re-run so
      * the sidebar's own state is recomputed against the new positions.
      *
-     * `activeHeading` for the offset underneath it. It is a derived read
-     * (`headingPositions` plus the scrollbox's real `scrollTop`), and the
-     * scroll adapter writes `markdownScrollAt` on every move the plugin makes,
-     * so this line is what turns a keypress into a repaint of the highlight.
-     * Reading it rather than `activeHeading()`'s result is the same thing, and
-     * the call form is what keeps the dependency visible at the read.
+     * `activeHeading` for the offset underneath it. It is a derived read --
+     * `headingPositions` plus the scrollbox's real `scrollTop` -- and the scroll
+     * adapter writes `markdownScrollAt` on every move the plugin makes, which is
+     * every move the keys make. So this line is what turns a keypress into a
+     * repaint of the highlight. Called rather than its result assigned, because a
+     * bare `activeHeading` written to an unused variable is a line a reader has
+     * to convince themselves is still a read.
      *
      * `contentWidth` because it decides whether there is a sidebar at all and
      * how wide the content column is, and both of those change on a terminal
