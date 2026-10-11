@@ -540,8 +540,22 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const markdownScroll: Setter<number> = (value) => {
     const box = markdownBox as { scrollTop: number; scrollTo(n: number): void } | undefined
     if (!box) return 0
-    const updater = typeof value === "function" ? value : () => value
-    const next = updater(box.scrollTop)
+    /*
+     * The two forms of `Setter<number>`'s argument, separated rather than
+     * inferred.
+     *
+     * The signal writer's declared type is an overloaded object rather than
+     * `(prev: number) => number`, so `typeof value === "function"` narrows it to
+     * a union TypeScript will not call a signature across: the caller writes an
+     * updater over the previous position, and the declared type happens to allow
+     * a bare number as well. So the form is chosen explicitly -- call the updater
+     * with the previous position, or take the number -- and each branch is cast
+     * to the shape the branch itself says it is. The previous position is the
+     * renderable's own `scrollTop`, which is the whole point of reading it here
+     * rather than keeping a copy.
+     */
+    const next: number =
+      typeof value === "function" ? (value as (prev: number) => number)(box.scrollTop) : (value as number)
     // Passed through unclamped on purpose. See the comment above: clamping here
     // means guessing a bound the renderable has not published, and the one guess
     // this made was against a property that does not exist.
