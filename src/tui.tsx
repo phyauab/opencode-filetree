@@ -276,6 +276,13 @@ export default Plugin.define({
     const closeViewer = () => {
       setViewerScroll = undefined
       setViewerOpen(false)
+      // Release the tree's key claim so the nav layer goes inert the moment the
+      // viewer closes. Without this, `keysHeld` stays true and the nav layer
+      // keeps intercepting keys meant for the chat prompt -- typing an "s"
+      // sends the selected file to the session. The escape handler above
+      // (releaseTheKeys) does this too, but the viewer layer owns escape
+      // while it is open, so this is the close that has to reset it.
+      keysHeld = false
       context.ui.panel.close()
       trace("viewer.close")
     }
