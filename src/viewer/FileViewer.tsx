@@ -414,20 +414,76 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * the scrollbar clamps, so the only position the reader can actually be at is
    * the one the renderable reports. Mirroring the *request* would put the
    * highlight off by exactly the overshoot -- the class of bug this feature
-   * exists to prevent. So the signal is written on every move the plugin makes,
-   * which is every move the keys make, purely to make the read reactive; its
-   * value is read for the dependency and not for the answer.
+   * exists to prevent. The signal's value is therefore read for its dependency
+   * and never for the answer; what it carries is a marker that the offset was
+   * last *looked at*, and every write is an opportunity to look again.
    *
    * `0` before the box is captured, which is a real offset and not a sentinel:
    * a document at the top of the file draws its first heading on row 0, and
    * `findActiveHeading` answers `0` for it there.
    */
-  const [markdownScrollAt, setMarkdownOffset] = createSignal(0)
+  const [markdownOffsetSeen, setMarkdownOffset] = createSignal(0)
   const markdownOffset = (): number => {
-    markdownScrollAt()
+    markdownOffsetSeen()
     const box = markdownBox as { scrollTop?: number } | undefined
     return typeof box?.scrollTop === "number" ? box.scrollTop : 0
   }
+
+  /*
+   * Re-read the scrollbox on every painted frame, so a mouse wheel keeps the
+   * sidebar honest.
+   *
+   * The keys are not the only thing that scrolls. `ScrollBoxRenderable`'s
+   * `onMouseEvent` handles a wheel by accumulating a delta and assigning
+   * `this.scrollTop` directly (`index.node.js`, `ScrollBoxRenderable.onMouseEvent`),
+   * and nothing in this plugin runs: no adapter, no signal write, no repaint
+   * effect re-run. The getter above was already reading the live renderable, so
+   * the *answer* was right -- but a Solid accessor only re-evaluates when
+   * something it read changed, and the only thing it read was the signal. The
+   * sidebar therefore sat on the heading the reader was on before the wheel and
+   * stayed there until the next keypress or resize, which is the exact "stale
+   * panel" shape this repo has paid for four times.
+   *
+   * A frame is the only signal that covers this, and it is what the host itself
+   * offers: `CliRendererEvents.FRAME` is emitted after every frame that renders
+   * (`listenerCount(FRAME) > 0` guarding the emit), and a wheel scroll produces
+   * frames because the document moved and has to be painted. The scrollbox's own
+   * scroll event would be the right shape and is not available --
+   * `ScrollBarRenderable`'s `scrollPosition` setter has its `emit("change", ...)`
+   * commented out, so there is nothing on the renderable to subscribe to. That is
+   * the whole reason this is a frame listener rather than a scroll listener, and
+   * it is worth writing down because "subscribe to the scroll event" is the
+   * obvious answer and the obvious answer does not exist in this host.
+   *
+   * Cheap by construction: a property read and a comparison per frame, and the
+   * write only happens when the number actually moved, so a still sidebar costs
+   * nothing and does not re-run the repaint effect sixty times a second.
+   */
+  createEffect(() => {
+    if (!markdown) return
+    const renderer = context.renderer as
+      | { on?: (event: string, handler: () => void) => void; off?: (event: string, handler: () => void) => void }
+      | undefined
+    if (!renderer) return
+
+    const resync = () => {
+      const box = markdownBox as { scrollTop?: number } | undefined
+      if (typeof box?.scrollTop !== "number") return
+      // Compared before written, because a signal write that does not change the
+      // value is free in Solid and re-running the repaint effect sixty times a
+      // second is not.
+      if (box.scrollTop === markdownOffset()) return
+      setMarkdownOffset(box.scrollTop)
+      // The effect above asks for a frame whenever this moves, so the sidebar is
+      // already scheduled to repaint; this is not an extra one. It is here so a
+      // wheel scroll that lands on the same row the reader was already on does
+      // not silently skip a repaint the document itself needs.
+      context.renderer.requestRender()
+    }
+
+    renderer.on?.("frame", resync)
+    onCleanup(() => renderer.off?.("frame", resync))
+  })
 
   /*
    * The writer the markdown path hands the keymap, in place of the signal's.
@@ -612,6 +668,36 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   }
 
   /*
+   * The columns the content column is allowed before the sidebar takes any.
+   *
+   * `maxWidth` first and the terminal second, and the order matters: the plugin
+   * hands the viewer a *preference* for how wide the content should be, and
+   * `maxWidth` is that preference. The terminal is a second ceiling on top of it,
+   * not an override of it -- a reader who has asked for 60 columns of markdown on
+   * a 200-column terminal wants 60, not 200.
+   *
+   * Both are min'd rather than either/or, so the content is never wider than the
+   * screen (a box wider than the terminal is clipped by the screen, which is not
+   * "as wide as the reader asked for" in any sense they would recognise) and never
+   * wider than the preference (which is the whole point of the preference).
+   *
+   * This is a function rather than a line inside `contentWidth` because *two*
+   * things need it and they must not be able to disagree: the width the content
+   * column is drawn at, and the decision about whether the sidebar fits beside
+   * it. An earlier revision compared the sidebar's room against the terminal
+   * alone, which is right only while `maxWidth` is never the smaller of the two --
+   * and `filetree.set-width` is a persisted user setting, so it very much can be.
+   * `terminal=200, maxWidth=50` gave a 20-column content column beside a
+   * 30-column sidebar, which is the squeeze `MIN_CONTENT_WIDTH` exists to prevent,
+   * reached by a route nobody tested.
+   */
+  const contentCeiling = (): number => {
+    const wanted = props.maxWidth ?? DEFAULT_MAX_WIDTH
+    const terminal = terminalWidth()
+    return terminal > 0 ? Math.min(wanted, terminal) : wanted
+  }
+
+  /*
    * Whether the sidebar is drawn at all.
    *
    * Three things have to be true, and each of them is a way the feature would
@@ -624,38 +710,37 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    *     do not know how wide this is", and guessing there means drawing a
    *     sidebar at a width that may not exist -- which pushes the content off
    *     the right edge rather than merely leaving it narrower.
-   *   - What is left of the terminal is worth reading. `MIN_CONTENT_WIDTH` is
-   *     the floor, and the comparison is against the terminal rather than
-   *     against `maxWidth`: the caller's preference is a ceiling on the content,
-   *     not a promise that the terminal is that wide.
+   *   - What the content is left with is worth reading. `MIN_CONTENT_WIDTH` is
+   *     the floor, and what is compared against it is `contentCeiling()` -- the
+   *     same number the content column is then drawn at, less the sidebar's
+   *     width. Comparing against the terminal instead would let `maxWidth` under
+   *     the terminal pass a check the drawn layout then fails: on a 200-column
+   *     terminal with `viewerWidth` set to 50, the terminal has all the room in
+   *     the world and the content column has twenty columns.
    */
   const showToc = (): boolean => {
     if (headings.length === 0) return false
-    const terminal = terminalWidth()
-    if (terminal <= 0) return false
-    return terminal - tocWidth() >= MIN_CONTENT_WIDTH
+    if (terminalWidth() <= 0) return false
+    return contentCeiling() - tocWidth() >= MIN_CONTENT_WIDTH
   }
 
   /*
    * The columns the content column gets.
    *
-   * `maxWidth` rather than the terminal's width, as a ceiling: the plugin hands
-   * the viewer a preference for how wide the content should be, and honouring it
-   * is the difference between a document laid out for the reader's window and
-   * one stretched across a terminal far wider than anybody wants to read.
-   * Clamped down to the terminal, because a content box wider than the screen
-   * is not "as wide as the reader asked for" in any sense they would recognise.
+   * `contentCeiling()` minus the sidebar, and the same two floors the sidebar's
+   * own decision implies.
    *
    * One column, never zero. The layout floors its own width at one because a
    * zero-column wrap divides by nothing, and the box this number sizes has to
    * be at least as wide as the rows inside it or the document is clipped by its
-   * own frame rather than by the screen.
+   * own frame rather than by the screen. The floor is belt and braces here --
+   * `showToc` will not draw a sidebar that would leave less than thirty columns,
+   * and with no sidebar `contentCeiling()` is at least one -- but a box one
+   * column narrower than its own rows is a failure worth being unreachable rather
+   * than unlikely.
    */
   const contentWidth = (): number => {
-    const wanted = props.maxWidth ?? DEFAULT_MAX_WIDTH
-    const terminal = terminalWidth()
-    const ceiling = terminal > 0 ? Math.min(wanted, terminal) : wanted
-    return Math.max(1, showToc() ? ceiling - tocWidth() : ceiling)
+    return Math.max(1, showToc() ? contentCeiling() - tocWidth() : contentCeiling())
   }
 
   /*
@@ -744,12 +829,12 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      * the sidebar's own state is recomputed against the new positions.
      *
      * `activeHeading` for the offset underneath it. It is a derived read --
-     * `headingPositions` plus the scrollbox's real `scrollTop` -- and the scroll
-     * adapter writes `markdownScrollAt` on every move the plugin makes, which is
-     * every move the keys make. So this line is what turns a keypress into a
-     * repaint of the highlight. Called rather than its result assigned, because a
-     * bare `activeHeading` written to an unused variable is a line a reader has
-     * to convince themselves is still a read.
+     * `headingPositions` plus the scrollbox's real `scrollTop` -- and the offset
+     * signal underneath *that* is written both by the scroll adapter (a keypress)
+     * and by the frame listener above (a wheel), so this line is what turns
+     * either into a repaint of the highlight. Called rather than its result
+     * assigned, because a bare `activeHeading` written to an unused variable is a
+     * line a reader has to convince themselves is still a read.
      *
      * `contentWidth` because it decides whether there is a sidebar at all and
      * how wide the content column is, and both of those change on a terminal
