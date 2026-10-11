@@ -39,4 +39,35 @@ for (const pkg of packages) {
     if (error.code !== "ENOENT") throw error
   }
 }
+
+/**
+ * Directories bun hoists beside the aliases, which must not be loadable.
+ *
+ * `opentui-types-solid` is `@opentui/solid`, and `@opentui/solid` has a
+ * non-optional `peerDependency` on `solid-js` plus a dependency on
+ * `@opentui/core`; bun resolves all three and hoists the last two to the top of
+ * `node_modules` under their real names, on every install, forever. That is a
+ * runtime copy of exactly the two packages this guard exists to keep out: the
+ * host's OpenTUI context objects are only visible to code sharing the host's
+ * module instance, so a local one gives the plugin a second, empty context and
+ * every JSX element throws "No renderer found".
+ *
+ * The aliases carry the types -- `tsconfig.json`'s `paths` point at them -- so
+ * nothing in this package needs the hoisted copies, and the test in
+ * `scripts/verify-no-local-opentui.test.ts` is the guard that they stay gone.
+ * Deleting the directories rather than their files, because a directory with
+ * only its `.d.ts` left in it is still a directory `existsSync` reports and
+ * still a package that resolves.
+ */
+const HOISTED = [join(root, "node_modules", "solid-js"), join(root, "node_modules", "@opentui", "core")]
+
+for (const dir of HOISTED) {
+  try {
+    await rm(dir, { recursive: true, force: true })
+    console.log(`${dir}: removed hoisted runtime copy`)
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error
+  }
+}
+
 console.log(`opentui type-only guard: ${total} runtime files removed`)
