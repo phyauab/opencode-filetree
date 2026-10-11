@@ -444,16 +444,30 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    * stayed there until the next keypress or resize, which is the exact "stale
    * panel" shape this repo has paid for four times.
    *
-   * A frame is the only signal that covers this, and it is what the host itself
-   * offers: `CliRendererEvents.FRAME` is emitted after every frame that renders
+   * A frame is what covers this, and it is what the host offers:
+   * `CliRendererEvents.FRAME` is emitted after every frame that renders
    * (`listenerCount(FRAME) > 0` guarding the emit), and a wheel scroll produces
-   * frames because the document moved and has to be painted. The scrollbox's own
-   * scroll event would be the right shape and is not available --
-   * `ScrollBarRenderable`'s `scrollPosition` setter has its `emit("change", ...)`
-   * commented out, so there is nothing on the renderable to subscribe to. That is
-   * the whole reason this is a frame listener rather than a scroll listener, and
-   * it is worth writing down because "subscribe to the scroll event" is the
-   * obvious answer and the obvious answer does not exist in this host.
+   * frames because the document moved and has to be painted.
+   *
+   * The scrollbox's own scroll event would be the better shape and is not
+   * available, and the reason is worth getting right because it is not the
+   * obvious one. `ScrollBarRenderable` *does* emit `change` -- but only from the
+   * slider thumb's drag callback in its constructor
+   * (`index.node.js`, `ScrollBarRenderable`'s `slider: new SliderRenderable({...,
+   * onChange: (value) => { ...; this.emit("change", { position:
+   * this._scrollPosition }) }})`). Its `scrollPosition` setter never emits, so
+   * neither a wheel nor `scrollTo` nor `scrollChildIntoView` reaches that event;
+   * it fires when the reader drags the thumb. And `ScrollBoxRenderable` never
+   * subscribes to its own scrollbars' `change` and never re-emits it -- the four
+   * `this.emit(...)` calls in its body are all `SelectRenderableEvents`, which
+   * belong to the select class this source was copied from. So there is nothing
+   * on the scrollbox to subscribe to for a scroll, and a frame is what is left.
+   *
+   * An earlier version of this comment said the scrollbar's `change` emit was
+   * "commented out". It is not -- it exists and fires on thumb drags -- and the
+   * conclusion was right for the wrong reason, which is the worst kind of
+   * correct. It is recorded here so the next reader does not go looking for a
+   * commented-out line that is not there.
    *
    * Cheap by construction: a property read and a comparison per frame, and the
    * write only happens when the number actually moved, so a still sidebar costs

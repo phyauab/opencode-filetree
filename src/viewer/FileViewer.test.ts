@@ -1074,28 +1074,30 @@ describe("the table of contents beside a markdown file", () => {
     expect(headings().active()).toBe(2)
   })
 
-  it("notices a wheel scroll on the next painted frame", () => {
+  it("reads the offset live, so a wheel scroll is answered without a repaint", () => {
     /*
-     * I4: the answer was right and the *sidebar* did not move.
+     * What this actually verifies: `active()` reads the *renderable*, not a
+     * number this component kept.
      *
-     * `ScrollBoxRenderable.onMouseEvent` handles a wheel by accumulating a delta
-     * and assigning `this.scrollTop` directly. Nothing in this plugin runs: no
-     * adapter, no signal write, no repaint effect re-run. So while `active()`
-     * answered correctly to anyone who asked, Solid's accessor over the sidebar
-     * never re-evaluated -- the highlight and the window sat where they were until
-     * the next keypress or resize. That is the stale-panel shape this repo has
-     * paid for four times, arrived at by a new route.
+     * The box is moved the way a wheel moves it -- `ScrollBoxRenderable.onMouseEvent`
+     * accumulates a delta and assigns `this.scrollTop`, running nothing here -- and
+     * `active()` answers from that new position with no adapter call, no signal
+     * write and no frame in between. A design that mirrored the offset into a
+     * signal would still be answering from before the wheel. That is the property,
+     * and it is what Task 5's keypresses depend on.
      *
-     * The fix is a listener on the renderer's `frame` event, which is what a
-     * wheel scroll reliably moves: a document that scrolled has to be painted, and
-     * `CliRenderEvents.FRAME` fires after every frame that renders. The scrollbox's
-     * own scroll event would be the right shape and does not exist in this host --
-     * `ScrollBarRenderable`'s `scrollPosition` setter has its `emit("change")`
-     * commented out -- which is why this is a frame listener and not a scroll one.
+     * What this does NOT verify, and an earlier revision of this test claimed it
+     * did: that the *sidebar* follows the wheel. It cannot, and the reason is the
+     * stub. `props.children` is built once, at mount -- before the layout has
+     * handed over any positions, when `activeHeading()` is `-1` -- so no sidebar
+     * row is ever `reverse` in the described tree at any scroll position. The
+     * `active()` assertion below reads through `markdownOffset()` straight to
+     * `box.scrollTop`, so it passes whether or not the frame listener exists.
+     * Replace the listener's body with a no-op and this test still goes green,
+     * which is exactly why it is retitled rather than left claiming otherwise.
      *
-     * So the test fires a frame the way the host would: move the box the way a
-     * wheel moves it, then emit the frame, and check the sidebar's own state came
-     * back with it.
+     * The listener's own behaviour is pinned by the two tests below, which were
+     * checked by mutation: replace the listener body with a no-op and they fail.
      */
     const path = makeFile("readme.md", "# One\n\na\n\n## Two\n\nb\n\n### Three\n\nc\n")
     const renderer = createMockRenderer(WIDE_TERMINAL)
@@ -1104,23 +1106,47 @@ describe("the table of contents beside a markdown file", () => {
     const box = attachScrollbox(element, 0, 400, 20)
 
     expect(headings().active()).toBe(0)
-    expect(renderer.frameListeners()).toBeGreaterThan(0)
 
-    // A wheel, not a keypress: the box moves and nothing in the plugin runs -- no
-    // adapter, no signal write. The sidebar's own state has not been told.
+    // A wheel, not a keypress: the box moves and nothing in the plugin runs.
     box.scrollTop = 8
 
-    // The next painted frame is what carries the news, and it is a frame the
-    // host produces anyway because the document moved and has to be drawn.
-    renderer.fireFrame()
+    // Asked again with no repaint in between, the answer is the new one. The rows
+    // `## Two` and `### Three` sit at 4 and 8 in this layout, so 8 is heading 2.
     expect(headings().active()).toBe(2)
 
-    // And the frame after that changes nothing, so the listener is not simply
-    // re-asking sixty times a second.
-    const settled = renderer.frames()
-    renderer.fireFrame()
-    expect(headings().active()).toBe(2)
-    expect(renderer.frames()).toBe(settled)
+    // And back again, because the same getter has to work in both directions --
+    // a value cached on the way up only is still a stale value.
+    box.scrollTop = 0
+    expect(headings().active()).toBe(0)
+  })
+
+  it("registers a frame listener, and it is the markdown path that registers it", () => {
+    /*
+     * The registration itself, which is the part the test above cannot see.
+     *
+     * The frame listener is what makes the *sidebar* follow a wheel: a document
+     * that scrolled has to be painted, and `CliRenderEvents.FRAME` fires after
+     * every frame that renders, so the listener is the only thing the plugin
+     * controls that a wheel scroll moves. The scrollbox has no scroll event of
+     * its own to subscribe to -- see the note in `FileViewer.tsx` for what the
+     * host source actually shows, which is not what an earlier version of it
+     * claimed.
+     *
+     * So: a markdown viewer registers one, a code file registers none, and
+     * that asymmetry is the observable. Verified by mutation -- delete the
+     * `renderer.on?.("frame", resync)` line and this fails.
+     */
+    const markdown = makeFile("readme.md", "# One\n\ntext\n")
+    const code = makeFile("a.ts", "const a = 1\n")
+
+    const withSidebar = createMockRenderer(WIDE_TERMINAL)
+    mountCapturingHeadings(markdown, 20, { renderer: withSidebar })
+
+    const withoutSidebar = createMockRenderer(WIDE_TERMINAL)
+    mountCapturingHeadings(code, 20, { renderer: withoutSidebar })
+
+    expect(withSidebar.frameListeners()).toBeGreaterThan(0)
+    expect(withoutSidebar.frameListeners()).toBe(0)
   })
 
   it("does not write the offset on every frame of an unmoved scrollbox", () => {
@@ -1150,8 +1176,20 @@ describe("the table of contents beside a markdown file", () => {
   })
 
   it("does not listen for frames on the code path", () => {
-    // The Prism path has no sidebar, no scrollbox and no heading state, so a
-    // per-frame listener there would be the plugin's cost for nothing.
+    /*
+     * Half of the registration asymmetry, and the half that costs something.
+     *
+     * The Prism path has no sidebar, no scrollbox and no heading state, so a
+     * per-frame listener there would be the plugin's cost for nothing -- read and
+     * compare, sixty times a second, forever, to learn nothing.
+     *
+     * Overlaps with the positive half asserted in "registers a frame listener,
+     * and it is the markdown path that registers it" above. Kept as its own test
+     * because it is the one that would be deleted first if this ever grew a
+     * second frame listener, and because deleting it would leave the *absence*
+     * unpinned -- a test that only ever checks a thing exists passes just as
+     * happily when it has quietly started existing everywhere.
+     */
     const path = makeFile("a.ts", "const a = 1\n")
     const renderer = createMockRenderer(WIDE_TERMINAL)
     mount(path, 5, renderer)
@@ -1242,23 +1280,29 @@ describe("the table of contents beside a markdown file", () => {
     expect(contentColumnOf(element).props.height).toBe(17)
   })
 
-  it("puts each heading's row at the index the layout numbered it by", () => {
+  it("gives every heading a row that says its name, in document order", () => {
     /*
-     * The join between the layout's heading indices and the sidebar's rows,
-     * which is the one thing in this feature that is two separate lists.
+     * The join between the layout's heading list and the sidebar's rows, as far
+     * as this stub can see it.
      *
-     * `positions` is keyed by the index `extractHeadings` handed out, and the
-     * sidebar's rows are in the order that same call returned them. Nothing in
-     * the component connects them except their shared order, and an off-by-one
-     * between them is invisible to every other test here: the positions are
-     * right, the rows are right, and the highlight is on the wrong one.
+     * What is pinned: each heading's *text* lands on the row at its index. The
+     * row is found by its text and then compared against the index, so the
+     * sidebar drawing its headings in the wrong order, skipping one, or repeating
+     * one all fail here. That is a real gap -- two lists joined only by their
+     * shared order -- and it is closed.
      *
-     * The assertion is deliberately written the awkward way round. Reading the
-     * row by `index + 1` and checking it exists would pass for any implementation
-     * whatsoever, because the test itself did the indexing; an earlier revision of
-     * this test did exactly that and asserted nothing. So the row is located by
-     * its *text* -- which is what the reader sees, and which no amount of
-     * re-indexing can fake -- and its position is then compared to the index.
+     * What is NOT pinned, and an earlier version of this comment claimed it was:
+     * that the row carries the *index* the sidebar's highlight is computed from.
+     * `renderTocRow(heading, start + offset)` is what turns a window position
+     * back into a heading index, and changing it to `start + offset + 1` passes
+     * this test -- and the one below -- because both locate rows by text. Under
+     * this stub the row-to-index join is unobservable: the sidebar's rows are
+     * frozen at mount, before any positions exist, so `activeHeading()` is `-1`
+     * and no row is ever `reverse`.
+     *
+     * That is not a gap a better test closes here; it is the stub having no
+     * reconciler. Task 6's manual testing against a live host is the only thing
+     * that can confirm a jump lands on the heading it names.
      */
     const source = "# Alpha\n\ntext\n\n## Beta\n\ntext\n\n### Gamma\n\ntext\n"
     const path = makeFile("readme.md", source)
@@ -1275,34 +1319,38 @@ describe("the table of contents beside a markdown file", () => {
       // heading's text. Trimmed because the drawn row is the indent plus the text,
       // and the indent is a function of the level rather than part of the name.
       const row = tocRowsOf(element).findIndex((text) => text.trim() === expected[index])
-      // Not `index + 1`: the row the text is found at has to be the row the index
-      // says, and a shift in either direction fails here.
+      // Not `index + 1` as a lookup: the row the text was *found* at has to be the
+      // row the index says, and a shift in either direction fails here.
       expect(row).toBe(index + 1)
-      // And that row is the one the layout's index for this heading names, which
-      // is the only claim the sidebar makes about it.
+      // And the layout really does have an entry for that index, so the two lists
+      // are the same length -- the failure where they are not is a sidebar showing
+      // a heading the layout has no row for.
       expect(headings().positions().has(index)).toBe(true)
     }
 
-    // The window is what makes the rows and the indices line up at all: it slices
-    // `headings` by position and then re-adds the offset to every index, so a
-    // window that started one heading late would renumber every row below it.
+    // The window is what makes rows and indices line up at all: it slices
+    // `headings` by position and re-adds the offset to every index, so a window
+    // that started one heading late would renumber every row below it.
     expect(tocWindowStart(0, 3, 10)).toBe(0)
   })
 
-  it("marks the row the active heading names, and not its neighbour", () => {
+  it("marks at most one row, whichever heading is active", () => {
     /*
-     * The same join, for the highlight rather than the text.
+     * The highlight side of the same join, stated as the limit rather than as the
+     * mechanism.
      *
-     * `active()` is an index into the layout's numbering. The sidebar marks a
-     * *row*. Between those two is the window offset, and this is the assertion
-     * that the offset is added rather than assumed away.
+     * `active()` is an index into the layout's numbering and the sidebar marks a
+     * row. An earlier version of this claimed to pin "the assertion that the
+     * offset is added rather than assumed away"; it did not, and neither does
+     * this. Under the stub no row is ever `reverse` -- the sidebar was drawn
+     * before any positions existed -- so what is left to say is the thing that
+     * must hold in that frozen state and in every other: one active index marks
+     * one row and never two, because `renderTocRow` compares its own index
+     * against `activeHeading()` and two rows claiming equality would mean two rows
+     * were handed the same index.
      *
-     * Scoped to headings the stub's snapshot actually drew, which is the window
-     * as it stood at mount: the stub builds `props.children` once, so the sidebar
-     * cannot be re-read after the scroll below and the rows under assertion are
-     * the ones that were really drawn. With four heading rows and nine headings,
-     * that is H0..H3 -- and the point does not need the later ones, because the
-     * failure is an index that is off by one rather than one that is stale.
+     * The window arithmetic that would shift that index is pinned separately in
+     * `tocWindowStart`'s own tests, which are pure and can be.
      */
     const source = Array.from({ length: 9 }, (_, i) => `# H${i}\n\ntext ${i}\n`).join("\n")
     const path = makeFile("long.md", source)
@@ -1310,38 +1358,25 @@ describe("the table of contents beside a markdown file", () => {
     renderContentView(element)
     const box = attachScrollbox(element, 0, 400, 20)
 
-    // Height 5: the label and four heading rows. The window start for each active
-    // heading is asserted directly, because the drawn window cannot move here.
-    const rows = 4
+    // Height 5: the label and four heading rows, which is the window as drawn.
     expect(tocRowsOf(element)).toEqual(["Contents", "H0", "H1", "H2", "H3"])
-    for (const index of [0, 1, 2, 3]) {
-      expect(tocWindowStart(index, 9, rows)).toBe(0)
-    }
-    // And past the window it stops being zero, which is the offset a row has to
-    // have added to it for the highlight to land on the right heading.
-    expect(tocWindowStart(8, 9, rows)).toBe(5)
 
+    const entries = () => elements(tocOf(element)?.props?.children).slice(1)
+    const markedRows = () =>
+      entries().filter((entry: any) =>
+        elements(entry?.props?.children).some((span: any) => span?.props?.style?.reverse === true),
+      ).length
+
+    // Whichever heading the reader is at -- including each in turn -- no two rows
+    // are ever marked, and the sidebar keeps naming the headings it drew.
     for (const index of [0, 1, 2, 3]) {
       box.scrollTo(headings().positions().get(index)!)
       expect(headings().active()).toBe(index)
-      // The row that says this heading's name, located by its text so the
-      // assertion cannot inherit the indexing it is testing.
-      const row = tocRowsOf(element).findIndex((text) => text.trim() === `H${index}`)
-      // Row 0 is the label, so the first heading is row 1. Anything else is an
-      // off-by-one between the layout's index and the sidebar's row.
-      expect(row).toBe(index + 1)
+      expect(markedRows()).toBeLessThanOrEqual(1)
     }
 
-    // Every other heading row is dim, and only the active one is marked. The
-    // distinction is what `renderTocRow` draws with, so this is the join itself.
-    const entries = elements(tocOf(element)?.props?.children).slice(1)
-    const marked = entries.filter((entry: any) =>
-      elements(entry?.props?.children).some((span: any) => span?.props?.style?.reverse === true),
-    )
-    // Nothing is marked at mount: the stub drew the sidebar before the layout
-    // handed over any positions, which is the same limitation the highlight test
-    // above documents. What is pinned here is that at most one row ever is.
-    expect(marked.length).toBeLessThanOrEqual(1)
+    // And the rows still say what they said, so nothing above disturbed them.
+    expect(tocRowsOf(element)).toEqual(["Contents", "H0", "H1", "H2", "H3"])
   })
 })
 
