@@ -476,7 +476,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      */
     return (
       <box flexDirection="row" justifyContent="center">
-        <box flexDirection="column" maxWidth={props.maxWidth ?? DEFAULT_MAX_WIDTH} height={props.height}>
+        <box flexDirection="column" width={props.maxWidth ?? DEFAULT_MAX_WIDTH} height={props.height}>
           <text fg="dim" wrapMode="none" truncate flexShrink={0}>
             {markdownHeader(file, props.path)}
           </text>
@@ -490,7 +490,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
 
   return (
     <box flexDirection="row" justifyContent="center">
-      <box flexDirection="column" maxWidth={props.maxWidth ?? DEFAULT_MAX_WIDTH}>
+      <box flexDirection="column" width={props.maxWidth ?? DEFAULT_MAX_WIDTH}>
         <text fg="dim" wrapMode="none" truncate>
           {header()}
         </text>
