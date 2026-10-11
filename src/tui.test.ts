@@ -172,6 +172,11 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
   const toasts: { message: string; variant: string }[] = []
   /** Every `panel.open` / `panel.close` in order, which is the whole event log. */
   const panelCalls: { action: "open" | "close"; name?: string }[] = []
+  /** What the host's input dialog was asked, and what a test answers it with. */
+  const dialogs: { title: string; description: string; value: string }[] = []
+  const dialogAnswers: (string | undefined)[] = []
+  /** Every `storage.store` key and its live value, so writes are observable. */
+  const stores = new Map<string, Record<string, unknown>>()
   /** What the host would report as this plugin's open panel. */
   let openPanel: { name: string; sessionID: string } | undefined
 
@@ -236,6 +241,24 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
           toasts.push(toast)
         },
       },
+      /**
+       * The input dialog `filetree.set-width` opens.
+       *
+       * It was absent, and `never pushes an input mode` runs every registered
+       * command -- so a command that consulted the host's dialog threw a
+       * TypeError out of a command that was otherwise correct, and the suite
+       * failed for a reason that had nothing to do with what it was watching.
+       *
+       * Answers are queued so a test can say what the reader typed, and an
+       * empty queue resolves to `undefined`, which is the host's own "cancelled"
+       * answer and is what the plugin already treats as "do nothing".
+       */
+      dialog: {
+        prompt: (options: { title: string; description: string; value: string }) => {
+          dialogs.push(options)
+          return Promise.resolve(dialogAnswers.length > 0 ? dialogAnswers.shift() : undefined)
+        },
+      },
       panel: {
         // Returns a boolean like the real thing: a test can assert that the
         // plugin's own gate follows what the host agreed to, rather than being
@@ -269,7 +292,29 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
         },
       },
     },
-    storage: { store: () => [{}, async () => {}], memory: () => [{}, () => {}] },
+    storage: {
+      /**
+       * A live store, because the write is the observable.
+       *
+       * The viewer-width command persists the reader's choice, and a store whose
+       * setter was a no-op made that path untestable: the command could have
+       * stopped writing anything at all and no test would have noticed. The
+       * setter is handed a draft the way the host hands one, and the result is
+       * readable by key.
+       */
+      store: (key: string, options: { initial: unknown } = { initial: {} }) => {
+        const state: Record<string, unknown> = { ...(options.initial as Record<string, unknown>) }
+        stores.set(key, state)
+        const set = (updater: (draft: Record<string, unknown>) => void) => {
+          const draft = { ...state }
+          updater(draft)
+          Object.assign(state, draft)
+          return Promise.resolve()
+        }
+        return [state, set]
+      },
+      memory: () => [{}, () => {}],
+    },
     data: { on: () => () => {}, listen: () => {} },
     theme: { markdown: { heading: "#e06c75" } },
     /**
@@ -315,8 +360,13 @@ function createMockContext(options: { promptFails?: boolean; reRendersOnClose?: 
     pushed,
     prompts,
     toasts,
+    dialogs,
     panelCalls,
     allCommands,
+    /** What the last `storage.store` call was handed, or asked for. */
+    stored: (key: string) => stores.get(key),
+    /** What the reader types into the next input dialog. */
+    answerDialog: (value: string) => dialogAnswers.push(value),
     /**
      * Renders the sidebar claim. The sidebar input carries the sessionID
      * directly; the tree element comes back as the claim's own result.
@@ -1303,6 +1353,60 @@ describe("plugin entry (sidebar spike)", () => {
     // Pushing a mode took over the host's keyboard: afterwards no key reached
     // anything and only clicking recovered.
     expect(pushed).toEqual([])
+  })
+
+  itRender("asks the host for a viewer width and persists what it is given", async () => {
+    // The `filetree.set-width` command's whole body, which nothing else in this
+    // file covered: it was registered, and the mock had no `ui.dialog` at all,
+    // so the command threw before it did anything and `never pushes an input
+    // mode` failed on it.
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+    m.answerDialog("80")
+    m.command("filetree.set-width")!.run()
+    await wait(20)
+
+    // Asked with the current width as the starting value, so the reader edits
+    // what is already set rather than being shown a placeholder.
+    expect(m.dialogs).toHaveLength(1)
+    expect(m.dialogs[0].value).toBe("150")
+    // And the answer really was written where the startup path reads it back
+    // from, so a restart keeps it.
+    expect(m.stored("filetree-viewer-width")).toEqual({ width: 80 })
+  })
+
+  itRender("toasts instead of persisting a width that is not a number", async () => {
+    // `Number("abc")` is NaN and `Number("-4")` is fine as a number and useless
+    // as a width, so the guard has to reject both; persisting either would leave
+    // the viewer unbounded or negative on the next open.
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    m.answerDialog("abc")
+    m.command("filetree.set-width")!.run()
+    await wait(20)
+    expect(m.toasts).toEqual([{ message: "Width must be a positive number", variant: "error" }])
+
+    m.answerDialog("0")
+    m.command("filetree.set-width")!.run()
+    await wait(20)
+    expect(m.toasts).toHaveLength(2)
+    expect(m.stored("filetree-viewer-width")).toEqual({ width: 0 })
+  })
+
+  itRender("does nothing when the width dialog is cancelled", async () => {
+    const { default: mod } = await load()
+    const m = createMockContext()
+    await mod.setup(m.context)
+
+    // No answer queued, which is the host's `undefined`.
+    m.command("filetree.set-width")!.run()
+    await wait(20)
+
+    expect(m.toasts).toEqual([])
+    expect(m.stored("filetree-viewer-width")).toEqual({ width: 0 })
   })
 
   itRender("cleanup unregisters the slot", async () => {
