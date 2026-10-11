@@ -365,9 +365,15 @@ export default Plugin.define({
        * document.
        */
       const positions = state.positions()
-      // An empty map is a markdown file with no headings in it, which the layout
-      // hands over before it has laid anything out. Nothing to jump between.
-      if (positions.size === 0) return
+      /*
+       * There is deliberately no `positions.size === 0` check above this line.
+       * An empty map is a markdown file with no headings in it, and it is what
+       * the layout hands over before it has laid anything out -- but both
+       * finders answer `null` for it, because there is no index above or below
+       * anything in a map with no entries. The `null` guard below is therefore
+       * the whole of that case, and a separate one would be a guard that never
+       * fires.
+       */
       const active = state.active()
       const index = step === "next" ? findNextHeading(positions, active) : findPrevHeading(positions, active)
       if (index === null) return

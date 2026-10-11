@@ -1571,6 +1571,64 @@ describe("jumping between sections in the markdown viewer", () => {
     expect(viewer.written).toEqual([])
   })
 
+  itRender("opening a code file after a markdown one leaves the markdown gate shut", async () => {
+    /*
+     * The `viewerHeadings = undefined` in `openViewer`, which is the one spec'd
+     * behaviour nothing else pins.
+     *
+     * `closeViewer` clears it too, and that half *is* covered below. What is not
+     * covered by any other test is the second `enter`: `openViewer` closes the
+     * panel and reopens it on the same session, and if the gate were left where
+     * the previous viewer put it, a markdown file's heading state would follow
+     * the reader into a code file and the jump key would scroll the `.ts` by the
+     * markdown file's rows. That is a jump landing the reader on a row belonging
+     * to a document they are no longer reading -- the same shape as a stale
+     * snapshot, reached by a route no snapshot would take.
+     *
+     * So the markdown state has to be *populated* first, which is what the jump
+     * below is for. A test that opened the code file directly would pass with
+     * the reset deleted, because there would be nothing stale to carry.
+     */
+    const { default: mod } = await import("./tui")
+    const m = createMockContext()
+    await mod.setup(m.context)
+    const state = m.panelState()
+
+    // Both files in one session. The panel is closed and reopened between the
+    // two entries, which is the remount this is about.
+    state.setEntries([
+      { name: "f.md", path: realMarkdownSource(HEADINGS), isDirectory: false },
+      { name: "f.ts", path: realFile(200), isDirectory: false },
+    ])
+
+    state.setCursor(0)
+    m.command("filetree.open")!.run()
+
+    const markdown = m.viewerOffsets()
+    const asked: number[] = []
+    markdown.scrollbox()!.props.ref(fakeScrollBox(0, 400, 38, asked))
+    markdown.markdownContent()!.props.onHeadingPositions(new Map(HEADING_ROWS))
+
+    // The gate is open and a jump works, which is what makes the stale state
+    // worth worrying about: there is now a populated map that could carry over.
+    m.command("filetree.viewer.heading.next")!.run()
+    expect(asked).toEqual([4])
+
+    state.setCursor(1)
+    m.command("filetree.open")!.run()
+
+    const code = m.viewerOffsets()
+
+    // The code path's writer is there -- the arrows scroll a code file fine --
+    // so what is asserted below is the heading gate and not the absence of a
+    // writer to write with.
+    expect(code.writer()).toBeDefined()
+
+    m.command("filetree.viewer.heading.next")!.run()
+
+    expect(code.written).toEqual([])
+  })
+
   itRender("a markdown file with no headings laid out has nothing to jump between", async () => {
     // The seeded empty map, which is what the viewer holds before
     // `MarkdownContentView` has laid anything out. A document with no headings
