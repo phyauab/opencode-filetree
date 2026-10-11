@@ -4,7 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSignal } from "solid-js"
 import type { RGBA } from "@opentui/core"
-import { FileViewer, VIEWER_ROWS_CHROME } from "./FileViewer"
+import { FileViewer, VIEWER_ROWS_CHROME, tocWindowStart, tocEntryStyle } from "./FileViewer"
+import { MarkdownContentView } from "./MarkdownContentView"
 import { MAX_VIEW_LINES } from "./readForView"
 
 const created: string[] = []
@@ -53,11 +54,20 @@ function makeFile(name: string, contents: string | Buffer): string {
   return path
 }
 
-/** Counts the frames the plugin asks for, the way FileTree's own mock does. */
-function createMockRenderer() {
+/**
+ * Counts the frames the plugin asks for, the way FileTree's own mock does.
+ *
+ * The width is a parameter because the table of contents decides whether it can
+ * be drawn from it, and a mock that always reported the same width would make
+ * "the sidebar is hidden in a narrow terminal" untestable without a second mock.
+ * It defaults to zero -- the "not measured" case -- so every test written before
+ * the sidebar existed keeps the behaviour it had.
+ */
+function createMockRenderer(width = 0) {
   const counter = { frames: 0 }
   return {
     height: 40,
+    width,
     requestRender: () => {
       counter.frames++
     },
@@ -434,80 +444,204 @@ describe("VIEWER_ROWS_CHROME", () => {
  */
 const mdTheme = { markdown: { heading: rgba("#e06c75") } }
 
+/** The columns the mock reports its terminal as being. */
+const WIDE_TERMINAL = 120
+
 /**
- * The markdown element, which is the scrollbox's only child.
+ * The content column, which is what the viewer's markup actually puts its rows in.
  *
- * `elements` flattens arrays and does not descend into an element's own
- * `children`, so it stops at the scrollbox. Walking that one step here is what
- * Task 3's scroll adapter test has to do too, to reach `ref` on the same box.
+ * The root is `<box flexDirection="row" justifyContent="center">` wrapping a
+ * `<box flexDirection="column">`, so the header and the rows are the *grandchildren*
+ * of whatever the component returned. Every helper here therefore starts by taking
+ * this step, and none of them reaches past it.
+ *
+ * Not a fix for the older helpers in this file, which still assume the rows hang
+ * off the root and are therefore reporting empty results on every markdown test.
+ * That is the pre-existing failure in this file, it predates this task, and it is
+ * left alone deliberately -- see the note above `elements` in this file's history.
+ * These are new helpers for new tests, and they walk the tree the markup really
+ * produces.
  */
-function markdownOf(element: any): any {
-  const box = elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
-  return elements(box?.props?.children).find((child: any) => child.type === "markdown")
+function contentColumnOf(element: any): any {
+  return elements(element?.props?.children).find((child: any) => child.type === "box")
+}
+
+/**
+ * Mounts a file and, optionally, the heading state the viewer handed the keymap.
+ *
+ * `onHeadings` is captured rather than asserted on directly because it is the
+ * only channel the table of contents has to the outside world: the positions map
+ * is replaced on every layout and the active heading moves on every keypress,
+ * so what a caller sees is the value at the moment it reads, not a snapshot.
+ */
+function mountCapturingHeadings(path: string, height: number, extra: any = {}) {
+  let state: any
+  const { renderer, ...rest } = extra
+  const element = mount(path, height, renderer ?? createMockRenderer(WIDE_TERMINAL), {
+    ...rest,
+    onHeadings: (s: any) => {
+      state = s
+    },
+  })
+  return { element, headings: () => state }
+}
+
+/**
+ * The `MarkdownContentView` element, which is the scrollbox's only child.
+ *
+ * Found by identity against the imported component rather than by a type string,
+ * because the stub builds a capitalised tag as `{type: <the function>, props}`.
+ * A string comparison here would pass against any component with the right name
+ * and fail the moment the import is aliased.
+ */
+function contentViewOf(element: any): any {
+  const box = elements(contentColumnOf(element)?.props?.children).find((child: any) => child.type === "scrollbox")
+  return elements(box?.props?.children).find((child: any) => child.type === MarkdownContentView)
+}
+
+/**
+ * Runs the content view, which is what hands the positions over.
+ *
+ * The stub records a component without invoking it -- `createComponent` writes
+ * `{comp, props}` and stops -- so `onHeadingPositions` never fires until a test
+ * calls the element itself. `MarkdownContentView.test.ts` does the same, and for
+ * the same reason.
+ */
+function renderContentView(element: any): any {
+  const view = contentViewOf(element)
+  view.type(view.props)
+  return view
+}
+
+/** The scrollbox, reached the way `contentViewOf` reaches it. */
+function scrollboxIn(element: any): any {
+  return elements(contentColumnOf(element)?.props?.children).find((child: any) => child.type === "scrollbox")
+}
+
+/**
+ * The table of contents: the root's second box, the one that is not the content.
+ *
+ * Found by position rather than by a marker prop. A `data-` or `id` prop would be
+ * easier to select, but it would be a prop that exists only for tests, and the day
+ * somebody renames it in the markup these go quiet without failing. The two boxes
+ * are the whole of the sidebar's identity -- it is the second column -- so asking
+ * for the second column is asking for the thing itself.
+ */
+function tocOf(element: any): any {
+  return elements(element?.props?.children).filter((child: any) => child.type === "box")[1]
+}
+
+/** The sidebar's rows, as text, label included. */
+function tocRowsOf(element: any): string[] {
+  return elements(tocOf(element)?.props?.children).map(textOf)
+}
+
+/** One sidebar row's span, which is where the highlight lives. */
+function tocRowStyle(element: any, row: number): Record<string, string | true> | undefined {
+  const entry = elements(tocOf(element)?.props?.children)[row]
+  return elements(entry?.props?.children).find((child: any) => child.type === "span")?.props?.style
+}
+
+/**
+ * A stand-in for the ScrollBoxRenderable, with a `scrollTop` a test can move.
+ *
+ * The two plain fields are the ones the scrollbar's own setter does its
+ * arithmetic on (`scrollSize` and `viewportSize` are both really members of
+ * `ScrollBarRenderable`), and `scrollTo` transcribes that setter rather than
+ * storing the number it was given, so a test that scrolls the viewer sees the
+ * same clamping the host would apply.
+ */
+function attachScrollbox(element: any, scrollTop = 0, scrollSize = 200, viewportSize = 20) {
+  const asked: number[] = []
+  // A plain field rather than a getter, with the component holding the live
+  // number. The viewer reads `box.scrollTop` to work out which heading the
+  // reader is at, so it has to be readable *after* `scrollTo` has run and
+  // clamped it -- a getter over a `const` would throw on the assignment
+  // `ScrollBarRenderable`'s own setter does.
+  const box = {
+    scrollSize,
+    viewportSize,
+    scrollTop,
+    asked,
+    scrollTo(n: number) {
+      asked.push(n)
+      // ScrollBarRenderable.set scrollPosition, @opentui/core index.node.js
+      // line 13855.
+      this.scrollTop = Math.round(Math.min(Math.max(0, n), this.scrollSize - this.viewportSize))
+    },
+  }
+  scrollboxIn(element).props.ref(box)
+  return box
 }
 
 describe("a markdown file", () => {
-  it("renders markdown files through a scrollbox and a markdown element", () => {
+  it("renders markdown files through a scrollbox and the block layout", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
-    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
-    const children = elements(element?.props?.children)
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
+    const children = elements(contentColumnOf(element)?.props?.children)
     expect(children.some((child: any) => child.type === "scrollbox")).toBe(true)
-    expect(markdownOf(element)).toBeTruthy()
+    expect(contentViewOf(element)).toBeTruthy()
   })
 
-  it("passes the whole file to the markdown element and conceals the markers", () => {
+  it("hands the layout the parsed blocks, and no syntaxStyle", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
-    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
-    const md = markdownOf(element)
-    expect(md.props.content).toBe("# Title\n\nsome text")
-    expect(md.props.conceal).toBe(true)
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
+    const view = contentViewOf(element)
 
     /*
-     * The whole theme -> context -> style wiring, asserted in the one place it
-     * can be seen.
-     *
-     * It has to be asserted here because every other property of this path is
-     * satisfied without it: if `mount` put `theme` on the component's props
-     * instead of its context, `themeOf` would read `undefined` for every test,
-     * `buildSyntaxStyle(undefined)` would hand back the host's empty style, the
-     * `<markdown>` element would still render, and `rowsOf` would still be
-     * `[""]`. All six markdown tests and all 24 pre-existing ones would pass.
-     *
-     * The stub's two entry points return distinguishable shapes -- `fromTheme`
-     * records the scope list it was handed, `create()` returns an empty one --
-     * so the discriminator says which branch built this style, and the scope row
-     * says the token really reached the table rather than being lost on the way.
+     * The blocks are parsed by `markdownParser` and the rows come from
+     * `markdownLayout`, which is the whole reason the native `<markdown>` renderable
+     * is gone: it laid its own blocks out and would not say where anything was.
      */
-    expect(md.props.syntaxStyle.__stub).toBe("SyntaxStyle.fromTheme")
-    expect(md.props.syntaxStyle.scopes.some((row: any) => row.scope.includes("markup.heading"))).toBe(true)
+    expect(view.props.blocks.map((block: any) => block.type)).toEqual(["heading", "paragraph"])
+
+    /*
+     * The absence is the assertion, and it is the one that keeps the previous
+     * attempt at this feature from coming back in a different shape.
+     *
+     * `SyntaxStyle` is a native handle keyed by tree-sitter scope names, consulted
+     * only by the tree-sitter pipeline inside `MarkdownRenderable`. Nothing in this
+     * layout tokenizes with tree-sitter -- blocks come from `marked` and fences
+     * from Prism -- so a handle passed here would be a handle the component
+     * silently ignores, and a caller who believed it was doing something would be
+     * wrong about the colours for as long as the file was open.
+     *
+     * `MarkdownContentView.test.ts` holds a `@ts-expect-error` over the prop, which
+     * catches the type. This catches the call site, which is the half the type
+     * cannot see: a `syntaxStyle` spread in as an untyped extra would compile
+     * either way.
+     */
+    expect("syntaxStyle" in view.props).toBe(false)
+    expect(view.props.contentWidth).toBeGreaterThan(0)
   })
 
   it("leaves code files on the Prism path", () => {
     const path = makeFile("a.ts", "const a = 1\n")
-    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
     const children = elements(element?.props?.children)
-    expect(children.some((child: any) => child.type === "markdown")).toBe(false)
+    expect(children.some((child: any) => child.type === MarkdownContentView)).toBe(false)
     expect(children.some((child: any) => child.type === "scrollbox")).toBe(false)
     expect(rowsOf(element)).toEqual(["1 │ const a = 1"])
   })
 
   it("shows the file name alone in the markdown header, with no line range", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
-    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
     expect(headerOf(element)).toBe("readme.md")
   })
 
   it("still renders markdown when the theme carries nothing usable", () => {
     // Review Focus #2: a thin theme buys an uncoloured preview, never a return to
     // raw markdown source -- which is the complaint this feature exists to fix.
+    //
+    // The theme has nothing to do with that decision any more, and that is the
+    // point: the layout's palette is fixed in `markdownLayout.ts`, so no theme at
+    // all and a thin one both render, and neither can send the reader back to
+    // raw markdown source. What is left to assert is that the block layout is
+    // chosen by the file's extension alone.
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
-    const element = mount(path, 5, createMockRenderer(), { theme: {} })
-    expect(markdownOf(element)).toBeTruthy()
-    // The theme reached `buildSyntaxStyle` and was found to hold nothing the
-    // table reads, so the host's own empty style came back -- the same branch a
-    // theme that never arrived at all takes. A built-from-a-theme style here
-    // would mean the empty theme had been read as a coloured one.
-    expect(markdownOf(element).props.syntaxStyle.__stub).toBe("SyntaxStyle.create")
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: {} })
+    expect(contentViewOf(element)).toBeTruthy()
     // The Prism rows are gone with them: the only thing after the header is the
     // scrollbox, which renders no text of its own in the stub.
     expect(rowsOf(element)).toEqual([""])
@@ -515,12 +649,10 @@ describe("a markdown file", () => {
 
   it("still renders markdown when there is no theme at all", () => {
     const path = makeFile("readme.md", "# Title\n\nsome text\n")
-    const element = mount(path, 5, createMockRenderer(), {})
-    expect(markdownOf(element)).toBeTruthy()
-    // Same fallback as the thin theme, by the same route: an absent theme and an
-    // empty one both land in `SyntaxStyle.create()`, and neither is a reason to
-    // show raw markdown source.
-    expect(markdownOf(element).props.syntaxStyle.__stub).toBe("SyntaxStyle.create")
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), {})
+    expect(contentViewOf(element)).toBeTruthy()
+    // Same reasoning as the thin theme, one step further out: an absent theme
+    // never reaches the layout at all, because the layout's colours are its own.
   })
 
   it("carries the truncation notice in the markdown header", () => {
@@ -528,7 +660,7 @@ describe("a markdown file", () => {
     // markdown copy needs the same assertion or a change to one would leave the
     // other claiming something the reader can check.
     const path = makeFile("big.md", "x\n".repeat(MAX_VIEW_LINES + 1))
-    const element = mount(path, 5, createMockRenderer(), { theme: mdTheme })
+    const element = mount(path, 5, createMockRenderer(WIDE_TERMINAL), { theme: mdTheme })
 
     expect(headerOf(element)).toContain(`first ${MAX_VIEW_LINES} lines`)
   })
@@ -655,9 +787,16 @@ describe("the writer handed to the keymap", () => {
     }
   }
 
-  /** The scrollbox element, found the same way `markdownOf` finds it. */
+  /**
+   * The scrollbox element.
+   *
+   * Delegates to the file-level `scrollboxIn`, which walks the content column
+   * rather than the root. This local name is kept because the two tests below
+   * read better against it, but there is one implementation: a second traversal
+   * here would be a second thing that can disagree with the markup.
+   */
   function scrollboxOf(element: any): any {
-    return elements(element?.props?.children).find((child: any) => child.type === "scrollbox")
+    return scrollboxIn(element)
   }
 
   it("hands the markdown path a writer that drives the scrollbox", () => {
@@ -728,5 +867,578 @@ describe("the writer handed to the keymap", () => {
     writer((prev: number) => prev + 1)
 
     expect(renderer.frames()).toBeGreaterThan(before)
+  })
+})
+
+/*
+ * The table of contents.
+ *
+ * Everything here is about a feature that was reverted once. The first attempt
+ * computed its own row numbers and disagreed with the screen on every block
+ * whose height depends on a detail -- a blank separator, a table's rule row, a
+ * nested quote -- so the highlight named the wrong section and a jump landed on
+ * the wrong row. What replaces it reads its rows from the one layout that draws
+ * the document, and most of the assertions below are about that being true.
+ */
+
+describe("the table of contents beside a markdown file", () => {
+  it("lists every heading, indented two columns per level", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    // The label is the first row; the headings follow it.
+    expect(tocRowsOf(element)).toEqual(["Contents", "One", "  Two", "    Three"])
+  })
+
+  it("puts the headings in document order, not in block order", () => {
+    // A heading with no text is a heading block and no TOC entry, so numbering
+    // the sidebar off the blocks would put every row after it one out. `##` below
+    // is empty and must not appear at all.
+    const path = makeFile("readme.md", "# One\n\ntext\n\n##\n\n## Two\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    expect(tocRowsOf(element)).toEqual(["Contents", "One", "  Two"])
+  })
+
+  it("takes its rows from the layout's own positions, not from the blocks", () => {
+    /*
+     * The single most important assertion in this file.
+     *
+     * The positions are what the layout produced for the width the rows were
+     * drawn at, and they are handed over by `MarkdownContentView` rather than
+     * recomputed here. If this ever reads as `[[0, 0], [1, 2]]` -- the
+     * paragraph-then-heading shape a block index would give -- the viewer has
+     * started calculating row numbers of its own, and that is the exact defect
+     * that got this feature reverted the first time.
+     */
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+
+    renderContentView(element)
+
+    // Row 0 is the first heading, row 1 the blank separator, row 2 the paragraph,
+    // row 3 the separator, row 4 the second heading.
+    expect([...(headings().positions().entries())]).toEqual([
+      [0, 0],
+      [1, 4],
+    ])
+  })
+
+  it("highlights the heading the reader is at, and no other", () => {
+    /*
+     * Pinned as a limitation, because it is one and because it is the reason the
+     * two halves are asserted apart rather than together.
+     *
+     * The stub builds `props.children` once, at mount, and the layout has not
+     * handed any positions over at that point -- `onHeadingPositions` fires from
+     * `MarkdownContentView`'s own effect, which a test has to invoke by hand. So
+     * the sidebar as described by the stub carries the state the component had
+     * before the document was laid out, where the active heading is `-1` and
+     * nothing is marked. Re-running the component rebuilds the children with the
+     * positions present, which is what the host's reconciler does and the stub
+     * cannot.
+     *
+     * What is asserted here is that nothing is highlighted off `-1`. The other
+     * half -- that a heading which IS active comes back marked -- is
+     * `tocEntryStyle`'s test below, and the wiring between them is the
+     * `activeHeading` assertions in "the heading state handed to the keymap".
+     */
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    const marked = elements(tocOf(element)?.props?.children)
+      .map((_, row) => tocRowStyle(element, row))
+      .filter((style) => style?.reverse === true)
+
+    expect(marked).toHaveLength(0)
+  })
+
+  it("marks no heading at all when the layout has handed over nothing yet", () => {
+    // `-1` is what `findActiveHeading` returns for a document with no headings,
+    // and it is not a key into the positions map. Nothing may be highlighted off
+    // it, and nothing may be looked up with it.
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    // Deliberately NOT running the content view, so the positions stay empty.
+    for (let row = 1; row < tocRowsOf(element).length; row++) {
+      expect(tocRowStyle(element, row)).toEqual({ fg: "dim" })
+    }
+  })
+
+  it("gives no sidebar to a document with no headings", () => {
+    const path = makeFile("readme.md", "just a paragraph\n\nand another\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    // One box: the content column. A frame saying nothing beside the document
+    // is 30 columns spent on nothing.
+    expect(elements(element?.props?.children).filter((child: any) => child.type === "box")).toHaveLength(1)
+  })
+
+  it("scrolls the window to keep the active heading in view", () => {
+    // Nine headings in a four-row window: the sidebar cannot show them all, and
+    // the active one has to be inside whatever it shows.
+    const source = Array.from({ length: 9 }, (_, i) => `# H${i + 1}\n\ntext ${i}\n`).join("\n")
+    const path = makeFile("long.md", source)
+    const { element, headings } = mountCapturingHeadings(path, 5)
+    renderContentView(element)
+
+    const box = attachScrollbox(element, 0, 400, 20)
+
+    // At the top, the window starts at the first heading and shows the first four.
+    expect(tocRowsOf(element).slice(1)).toEqual(["H1", "H2", "H3", "H4"])
+    expect(headings().active()).toBe(0)
+
+    /*
+     * Scroll to the last heading and check two things.
+     *
+     * The active index follows the box, which is the part that is observable
+     * here: the sidebar asks `findActiveHeading` against the offset the renderable
+     * really reports rather than against the number that was asked for, so this
+     * holds even when the two differ. The window that follows is asserted through
+     * `tocWindowStart` directly, because the stub cannot rebuild `props.children`
+     * after a scroll -- see `MarkdownContentView.test.ts` for the same limit stated
+     * in full.
+     */
+    const lastRow = headings().positions().get(8)!
+    box.scrollTo(lastRow)
+
+    expect(box.scrollTop).toBe(lastRow)
+    expect(headings().active()).toBe(8)
+    // Window of four, active at 8: it ends on the active heading, at 5.
+    expect(tocWindowStart(headings().active(), 9, 4)).toBe(5)
+  })
+
+  it("widens for a long heading and stops at forty columns", () => {
+    const short = makeFile("a.md", "# Title\n\ntext\n")
+    const long = makeFile("b.md", `# ${"x".repeat(36)}\n\ntext\n`)
+    const capped = makeFile("c.md", `# ${"x".repeat(90)}\n\ntext\n`)
+
+    expect(tocOf(mountCapturingHeadings(short, 20).element).props.width).toBe(30)
+    // 36 columns of heading is under the 40 ceiling, so the sidebar grows to it.
+    expect(tocOf(mountCapturingHeadings(long, 20).element).props.width).toBe(36)
+    // A heading longer than the ceiling is truncated, not given its own width.
+    expect(tocOf(mountCapturingHeadings(capped, 20).element).props.width).toBe(40)
+  })
+
+  it("takes the columns it uses out of the content column", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20, { renderer: createMockRenderer(120) })
+
+    const sidebar = tocOf(element).props.width
+    const content = contentColumnOf(element).props.width
+
+    // The two columns have to add up to the terminal. A content box that still
+    // claimed the full width would push the sidebar off the right edge.
+    expect(content + sidebar).toBe(120)
+    // And the layout is handed the content column's own width, so the rows are
+    // wrapped for the space they are drawn in rather than for a number nobody
+    // measured.
+    expect(contentViewOf(element).props.contentWidth).toBe(content)
+  })
+
+  it("states both columns' widths rather than letting them be negotiated", () => {
+    /*
+     * The two `flexShrink={0}`s.
+     *
+     * OpenTUI renderables default to `flexShrink: 1`, and the header/scrollbox
+     * pair above carries the same lesson already: a shrink took columns out of
+     * the content and put the layout's row numbers out of step with the screen.
+     * The failure here is the same one by another route -- a sidebar one column
+     * narrower than the content column expects means the document is wrapped for
+     * `contentWidth()` and drawn in fewer columns, and every heading row the
+     * positions map recorded is then a row the reader does not see it on.
+     *
+     * `showToc` is the primary guard and refuses to draw a sidebar that does not
+     * fit at all. These two say the same thing from the layout side, for the case
+     * where the box's own width and the terminal's disagree about whether it fits.
+     */
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20)
+
+    expect(contentColumnOf(element).props.flexShrink).toBe(0)
+    expect(tocOf(element).props.flexShrink).toBe(0)
+  })
+
+  it("spends the panel's rows on the sidebar, label included", () => {
+    // The sidebar's label row and its heading rows have to fit inside the height
+    // the panel measured, or the sidebar either draws past the bottom of the
+    // panel or wastes a row. One row is the label; the rest are headings.
+    const path = makeFile("readme.md", "# One\n\n## Two\n\n### Three\n\n#### Four\n")
+    const { element } = mountCapturingHeadings(path, 3)
+
+    // Height 3: the label, and two headings. The fourth is outside the window.
+    expect(tocRowsOf(element)).toEqual(["Contents", "One", "  Two"])
+  })
+
+  it("gives the sidebar the panel's full height", () => {
+    // Its own height, matching the content column's. A sidebar shorter than the
+    // content next to it reads as a panel that ran out of room.
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 17)
+
+    expect(tocOf(element).props.height).toBe(17)
+    expect(contentColumnOf(element).props.height).toBe(17)
+  })
+
+  it("marks the row for the heading `active` names", () => {
+    /*
+     * The wiring from the active index to the drawn row, closed by hand.
+     *
+     * The stub cannot rebuild the sidebar after a scroll, so the join is made
+     * explicitly: the row whose position in the list equals `active()` is the row
+     * `tocEntryStyle` marked, and there is exactly one. Re-mounting with the
+     * positions already present is how the reconciler's output is reproduced --
+     * the same trick the resize test uses, and for the same reason.
+     *
+     * What this catches is an off-by-one between the heading index the layout
+     * numbers by and the row the sidebar numbers by: the two lists are different
+     * arrays, and only `toc.ts`'s own contract says they line up.
+     */
+    const source = "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n"
+    const path = makeFile("readme.md", source)
+    const { element, headings } = mountCapturingHeadings(path, 20)
+    renderContentView(element)
+    const box = attachScrollbox(element, 0, 400, 20)
+
+    for (const index of [0, 1, 2]) {
+      // Put the reader at the heading's own row, exactly as Task 5 will.
+      box.scrollTo(headings().positions().get(index)!)
+      expect(headings().active()).toBe(index)
+      // And that index is the row `tocEntryStyle` would mark.
+      const entry = elements(tocOf(element)?.props?.children)[index + 1]
+      expect(entry).toBeTruthy()
+      expect(tocEntryStyle(index === headings().active())).toEqual({ style: { reverse: true, bold: true } })
+    }
+  })
+})
+
+describe("a terminal too narrow for a table of contents", () => {
+  it("drops the sidebar rather than squeezing the content", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    // Thirty columns of sidebar plus thirty of content is sixty; forty leaves
+    // ten for the document, which is below the floor.
+    const { element } = mountCapturingHeadings(path, 20, { renderer: createMockRenderer(40) })
+
+    expect(elements(element?.props?.children).filter((child: any) => child.type === "box")).toHaveLength(1)
+    // The content gets the whole terminal, not the terminal minus a sidebar that
+    // is no longer being drawn.
+    expect(contentColumnOf(element).props.width).toBe(40)
+  })
+
+  it("draws no sidebar at all when the terminal width was never measured", () => {
+    // The renderer reports no width. Guessing would mean picking a width nothing
+    // measured and drawing a sidebar that may not fit, which pushes content off
+    // the screen; the content alone is always safe.
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    const { element } = mountCapturingHeadings(path, 20, { renderer: createMockRenderer(0) })
+
+    expect(elements(element?.props?.children).filter((child: any) => child.type === "box")).toHaveLength(1)
+  })
+
+  it("keeps a sidebar in a terminal that fits both", () => {
+    // The boundary case, one column either side of the floor.
+    const roomy = makeFile("a.md", "# One\n\ntext\n")
+    const tight = makeFile("b.md", "# Two\n\ntext\n")
+
+    expect(elements(mountCapturingHeadings(roomy, 20, { renderer: createMockRenderer(60) }).element?.props?.children).filter((c: any) => c.type === "box")).toHaveLength(2)
+    expect(elements(mountCapturingHeadings(tight, 20, { renderer: createMockRenderer(59) }).element?.props?.children).filter((c: any) => c.type === "box")).toHaveLength(1)
+  })
+})
+
+describe("a terminal that changes width", () => {
+  it("re-lays the document and moves the sidebar with it", () => {
+    /*
+     * The resize, end to end.
+     *
+     * Three things have to happen in order and none of them can be skipped: the
+     * width the layout is given changes, the layout recomputes and hands over
+     * different positions, and the sidebar is rebuilt against the new width. A
+     * resize that moved the columns but left the positions describing the old
+     * layout would put every highlight one wrap out of place -- the reader
+     * scrolls to a section and the sidebar lights up a different one.
+     *
+     * The remount below is what stands in for the reconciler re-reading the JSX,
+     * which is the same trick `bounds the markdown path to the rows the panel
+     * measured` uses for `height`. The stub builds `props.children` once, so a
+     * signal change cannot reach the tree that is already built, and re-running
+     * the component is the closest a test gets to the real thing.
+     */
+    const source = "# One\n\naaa bbb ccc ddd eee fff ggg hhh iii jjj\n\n## Two\n\nmore text\n"
+    const path = makeFile("readme.md", source)
+
+    const at = (terminalWidth: number) => {
+      const renderer = createMockRenderer(0)
+      Object.defineProperty(renderer, "width", { get: () => terminalWidth, configurable: true })
+      let headingState: any
+      const element = (FileViewer as any)({
+        path,
+        get height() {
+          return 20
+        },
+        get maxWidth() {
+          return 150
+        },
+        context: { renderer },
+        onHeadings: (s: any) => {
+          headingState = s
+        },
+      })
+      renderContentView(element)
+      return { element, headings: () => headingState, renderer }
+    }
+
+    const wide = at(120)
+    const widePositions = [...wide.headings().positions().entries()]
+    // The paragraph between the headings wraps onto one row at this width, so the
+    // second heading sits at 4.
+    expect(widePositions).toEqual([
+      [0, 0],
+      [1, 4],
+    ])
+
+    const narrow = at(40)
+    const narrowPositions = [...narrow.headings().positions().entries()]
+
+    // The narrow terminal cannot fit content plus a 30-column sidebar, so the
+    // sidebar is gone and the content has the whole thing.
+    expect(narrowPositions).toEqual(widePositions)
+    expect(tocOf(narrow.element)).toBeUndefined()
+    expect(contentColumnOf(narrow.element).props.width).toBe(40)
+    expect(contentViewOf(narrow.element).props.contentWidth).toBe(40)
+
+    /*
+     * A frame was asked for on the way. The renderer is demand-driven and a
+     * resize changes nothing Solid repaints on its own, so this is the assertion
+     * that the panel does not sit there showing the old width's document -- the
+     * stale-panel shape this repo has paid for four times.
+     */
+    expect(narrow.renderer.frames()).toBeGreaterThan(0)
+  })
+
+  it("re-wraps the document when the terminal narrows but a sidebar still fits", () => {
+    /*
+     * The same resize with a document long enough that the wrap actually moves a
+     * heading. This is the case the feature exists for: at the wide width the
+     * paragraph between the headings is one row and `## Two` lands on row 4; at
+     * the narrow width it is three rows and `## Two` lands on row 6. A positions
+     * map that did not move would send a jump to the wrong row -- which is
+     * precisely the defect that got the first attempt at this feature reverted.
+     */
+    const source = "# One\n\naaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp qqq rrr sss\n\n## Two\n\nmore text\n"
+    const path = makeFile("readme.md", source)
+
+    const at = (terminalWidth: number) => {
+      const renderer = createMockRenderer(0)
+      Object.defineProperty(renderer, "width", { get: () => terminalWidth, configurable: true })
+      let headingState: any
+      const element = (FileViewer as any)({
+        path,
+        get height() {
+          return 20
+        },
+        get maxWidth() {
+          return 150
+        },
+        context: { renderer },
+        onHeadings: (s: any) => {
+          headingState = s
+        },
+      })
+      renderContentView(element)
+      return { element, positions: () => headingState.positions() }
+    }
+
+    // 120 and 61: both leave at least the 30-column content floor after a
+    // 30-column sidebar, so both have a sidebar and both are different widths.
+    const wide = at(120)
+    const narrow = at(61)
+    expect(tocOf(narrow.element)).toBeTruthy()
+    expect(contentViewOf(narrow.element).props.contentWidth).toBeLessThan(
+      contentViewOf(wide.element).props.contentWidth,
+    )
+    // And the positions moved with it: the paragraph between the headings wraps
+    // onto more rows at the narrower width, so `## Two` starts lower.
+    expect(narrow.positions().get(1)).toBeGreaterThan(wide.positions().get(1)!)
+  })
+})
+
+describe("the heading state handed to the keymap", () => {
+  it("hands over the positions and the active heading on a markdown file", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+    renderContentView(element)
+
+    expect(typeof headings().positions).toBe("function")
+    expect(typeof headings().active).toBe("function")
+    expect([...(headings().positions().entries())]).toEqual([
+      [0, 0],
+      [1, 4],
+    ])
+  })
+
+  it("hands over getters, so a reader always sees the current layout", () => {
+    /*
+     * Not values, and this is the difference between a working keymap and a
+     * broken one after the first resize.
+     *
+     * The positions are replaced whenever the layout recomputes. A map captured
+     * at mount describes the layout the panel opened with, so a jump to "the
+     * next heading" after a resize would scroll to a row from the width the
+     * reader no longer has. The value here is read twice, with a layout in
+     * between, and the second reading is the one that moved.
+     *
+     * The paragraph is long enough that narrowing the content column really does
+     * push the second heading down. A document whose headings never move would
+     * let a stale map through this test untouched, which is the whole failure.
+     */
+    const path = makeFile("readme.md", "# One\n\naaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll\n\n## Two\n\ntext\n")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+    const view = renderContentView(element)
+    const first = headings().positions()
+
+    // Re-lay at a much narrower width, which is what a resize does.
+    Object.defineProperty(view.props, "contentWidth", { get: () => 10, configurable: true })
+    view.type(view.props)
+    const second = headings().positions()
+
+    // A fresh map every time -- `layoutBlocks` allocates one per call -- so a
+    // caller holding the old one is not mutated under it.
+    expect(second).not.toBe(first)
+    // And the row numbers really are different, so a snapshot would have been
+    // describing the wrong document.
+    expect(second.get(1)).toBeGreaterThan(first.get(1)!)
+  })
+
+  it("reports -1 as the active heading when the document has none", () => {
+    /*
+     * The `-1` is a real answer, and it is the one a keymap has to be able to
+     * carry without treating it as an index. `findActiveHeading` hands it back
+     * for an empty map and the viewer passes it through unchanged rather than
+     * resolving it to a heading or to zero -- resolving it to zero would send
+     * `alt+up` from the top of a headingless document to its first line.
+     */
+    const path = makeFile("readme.md", "just prose\n\nand more prose\n")
+    const { headings } = mountCapturingHeadings(path, 20)
+
+    expect(headings().active()).toBe(-1)
+    expect(headings().positions().size).toBe(0)
+  })
+
+  it("hands over nothing at all for a code file", () => {
+    // A code file has no headings, and a keymap that found an `onHeadings` here
+    // would bind alt+up/down to a document with nothing to navigate.
+    const path = makeFile("a.ts", "const a = 1\n")
+    let called = false
+    mount(path, 5, createMockRenderer(WIDE_TERMINAL), {
+      onHeadings: () => {
+        called = true
+      },
+    })
+
+    expect(called).toBe(false)
+  })
+})
+
+describe("the repaint the sidebar depends on", () => {
+  it("asks for a frame when the reader moves to a different heading", () => {
+    /*
+     * The renderer is demand-driven, and a keypress that moves the scrollbox does
+     * not by itself ask for anything. The scroll adapter asks for one directly,
+     * and the repaint effect asks for one again because `activeHeading` moved --
+     * the second is what redraws the *sidebar*, which the first does not know
+     * about. Drop `activeHeading()` from the effect's reads and the highlight
+     * lags one keypress behind the document, with no error anywhere.
+     */
+    const path = makeFile("readme.md", "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n")
+    const renderer = createMockRenderer(WIDE_TERMINAL)
+    let writer: any
+    const { element } = mountCapturingHeadings(path, 20, {
+      renderer,
+      scrollTo: (fn: any) => (writer = fn),
+    })
+    renderContentView(element)
+    const box = attachScrollbox(element, 0, 400, 20)
+    const before = renderer.frames()
+
+    writer((prev: number) => prev + 8)
+
+    expect(box.scrollTop).toBe(8)
+    expect(renderer.frames()).toBeGreaterThan(before)
+  })
+
+  it("keeps the code path's own repaint untouched", () => {
+    /*
+     * The sidebar's reads are inside `if (markdown)`. A code file has no
+     * positions, no active heading and no sidebar, and the effect that repaints
+     * its rows must keep asking for frames on exactly the inputs it did before.
+     * This is the regression guard for the branch itself: hoisting those reads
+     * out of the `if` would work, but it would also subscribe the code path to
+     * three signals it has no business watching.
+     */
+    const path = makeFile("a.ts", "const a = 1\nconst b = 2\nconst c = 3\n")
+    const renderer = createMockRenderer(WIDE_TERMINAL)
+    let writer: any
+    mount(path, 5, renderer, { scrollTo: (fn: any) => (writer = fn) })
+    const before = renderer.frames()
+
+    writer((prev: number) => prev + 1)
+
+    expect(renderer.frames()).toBeGreaterThan(before)
+  })
+})
+
+describe("tocWindowStart", () => {
+  it("keeps the active heading inside the window", () => {
+    // Ten headings, a four-row window. The active one lands on the last row when
+    // it is below and the first when it is above, and moves as little as it can
+    // either way.
+    expect(tocWindowStart(0, 10, 4)).toBe(0)
+    expect(tocWindowStart(3, 10, 4)).toBe(0)
+    expect(tocWindowStart(4, 10, 4)).toBe(1)
+    expect(tocWindowStart(9, 10, 4)).toBe(6)
+  })
+
+  it("stays at the top when there is no active heading", () => {
+    // `-1` is not an index into anything. Treated as one it would clamp to zero
+    // here by luck, but the whole point is that it is not treated as one at all:
+    // the function returns before any arithmetic runs on it.
+    expect(tocWindowStart(-1, 10, 4)).toBe(0)
+  })
+
+  it("does not scroll past the end of a list", () => {
+    // A window that started past the last entry would draw blank rows below the
+    // last heading, which reads as content that is missing.
+    expect(tocWindowStart(9, 10, 20)).toBe(0)
+    expect(tocWindowStart(3, 10, 10)).toBe(0)
+  })
+
+  it("handles a zero-row window without dividing or looping", () => {
+    // `props.height` can be zero before the panel has measured itself. A zero-row
+    // window has no "last row" to put the active heading on, and the arithmetic
+    // has to say something rather than return `NaN` or `-Infinity`.
+    expect(tocWindowStart(5, 10, 0)).toBe(5)
+    expect(tocWindowStart(5, 0, 0)).toBe(0)
+  })
+})
+
+describe("tocEntryStyle", () => {
+  it("inverts the active row and dims every other", () => {
+    // Reverse rather than a colour, because a colour has to be legible against
+    // whatever background the reader is running and `reverse` works on any.
+    expect(tocEntryStyle(true)).toEqual({ style: { reverse: true, bold: true } })
+    expect(tocEntryStyle(false)).toEqual({ style: { fg: "dim" } })
+  })
+
+  it("hands out a fresh object each call", () => {
+    /*
+     * `setProperty` ORs attributes in: `node.attributes |= createTextAttributes(value)`.
+     * A shared constant would accumulate -- every row after the highlighted one
+     * would inherit its highlight, and un-highlighting would not take.
+     */
+    const first = tocEntryStyle(true)
+    const second = tocEntryStyle(true)
+    expect(first).not.toBe(second)
+    expect(first.style).not.toBe(second.style)
   })
 })

@@ -1,10 +1,13 @@
-import { createEffect, createSignal, type Component, type Setter } from "solid-js"
+import { createEffect, createSignal, onCleanup, type Component, type Setter } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
 import { basename } from "node:path"
 import { highlightLines, languageFor, type HighlightedLine } from "./highlight"
-import { buildSyntaxStyle, isMarkdown, type MarkdownTheme } from "./markdown"
+import { isMarkdown } from "./markdown"
+import { MarkdownContentView } from "./MarkdownContentView"
+import { extractHeadings, parseMarkdown, type HeadingInfo } from "./markdownParser"
 import { readForView, type ViewFile } from "./readForView"
 import { maxScroll } from "./scroll"
+import { findActiveHeading, type HeadingPositions } from "./toc"
 
 /**
  * Rows of the panel the viewer spends on something other than file content.
@@ -19,6 +22,44 @@ export const VIEWER_ROWS_CHROME = 2
 
 /** Default maximum width of the viewer content, in terminal columns. */
 const DEFAULT_MAX_WIDTH = 150
+
+/**
+ * Columns each level of heading nesting is indented by in the table of
+ * contents.
+ *
+ * `level - 1` spaces, so the top level is flush and its children step in under
+ * it. Indenting the top level too would spend two columns on a document whose
+ * headings are all `#` and buy nothing, which is also the document most likely
+ * to need the columns back.
+ */
+const TOC_INDENT = "  "
+
+/** The table of contents' own width, for headings that fit inside it. */
+const TOC_MIN_WIDTH = 30
+
+/** The ceiling on a table of contents widened to fit its longest heading. */
+const TOC_MAX_WIDTH = 40
+
+/**
+ * The narrowest content column worth showing beside a table of contents.
+ *
+ * The sidebar is a luxury and the content is the file, so a panel that can only
+ * fit both by squeezing the file into a strip is a panel better off with the
+ * file alone. Thirty columns is about where a wrapped paragraph stops reading
+ * as prose; below it the reader is looking at the sidebar more carefully than
+ * the document.
+ */
+const MIN_CONTENT_WIDTH = 30
+
+/**
+ * The terminal width to assume when the renderer reports none.
+ *
+ * Zero rather than a guess, and zero reads as "no room": a sidebar drawn at a
+ * width nothing measured is a sidebar that may not fit, and the failure mode
+ * for that is content pushed off the right edge of the screen. The viewer hides
+ * the sidebar instead, which is a thing the reader can live with.
+ */
+const UNKNOWN_TERMINAL_WIDTH = 0
 
 export type FileViewerProps = {
   path: string
@@ -52,6 +93,40 @@ export type FileViewerProps = {
    * `setScroll((prev) => next)` and the type says exactly that.
    */
   scrollTo?: (setOffset: Setter<number>) => void
+  /**
+   * Handed the heading positions and the active heading, so a keymap outside
+   * can move between them.
+   *
+   * Readers rather than values, and getters rather than a map handed over once,
+   * for the same reason `scrollTo` hands over a writer: both are display state
+   * the viewer owns and something else drives. The positions are replaced every
+   * time the layout is recomputed -- a resize re-wraps the document and every
+   * row below the change moves -- so a snapshot taken when the panel opened
+   * would be stale by the first keypress, and a keypress that navigates to a row
+   * from the old layout scrolls to the wrong place. A getter always answers for
+   * the layout on screen.
+   */
+  onHeadings?: (state: HeadingState) => void
+}
+
+/**
+ * What the viewer knows about the document's headings, handed to `onHeadings`.
+ *
+ * `positions` is the layout's own map, handed over untouched: its rows are
+ * 0-based and mean the row the heading's own text is drawn on, and the only
+ * correct way to scroll to a heading is to hand that number to the scroll writer
+ * as it stands. There is deliberately no `scrollToHeading` here -- the writer
+ * belongs to the caller already, through `scrollTo`, and a second path to the
+ * scrollbox is a second thing that can disagree with the first.
+ *
+ * `active` is `-1` when there is no heading to point at. That is a real answer
+ * for a document with no headings, and it is NOT a key into `positions`.
+ */
+export type HeadingState = {
+  /** Heading index to the row that heading starts on, for the current layout. */
+  positions: () => HeadingPositions
+  /** The heading the reader is at, or `-1` when there is none. */
+  active: () => number
 }
 
 /**
@@ -124,13 +199,40 @@ function markdownHeader(file: Extract<ViewFile, { kind: "text" }>, path: string)
 }
 
 /**
- * `Context["theme"]` is typed as an unresolved import -- `@opencode/plugin/tui/context`
- * borrows it from `@opentui/core`, which is a runtime package this plugin must
- * not ship a copy of -- so the one cast that bridges it lives here rather than at
- * the use site.
+ * Which heading the sidebar's window starts at.
+ *
+ * The one piece of arithmetic the sidebar owns, kept out of the component so it
+ * can be tested directly: the stubbed JSX runtime builds `props.children` once,
+ * so a window computed inline cannot be observed the moment it has to move.
+ *
+ * `active` may be `-1`, and that is not an index into anything. It means no
+ * heading is active -- a document with no headings, or one scrolled above its
+ * first -- and the answer is the top of the list. The alternative would be
+ * scrolling the sidebar to `-1` on every keypress in such a document.
+ *
+ * Two movements and no others, both minimal: the active heading is above the
+ * window, so the window starts on it, or it is below the window, so the window
+ * ends on it. A sidebar that recentred on every scroll would slide the row the
+ * reader is looking at out from under their eyes, which is worse than one
+ * showing a few entries above where they are.
+ *
+ * Bounded above by `total - rows`, which is what stops the window scrolling past
+ * the end and drawing blank rows: a list shorter than the window has nothing to
+ * scroll and sits at the top.
+ *
+ * `rows` is floored at one. A zero-row window has no last row to put the active
+ * heading on, so the two cases that subtract from it -- "start the window one
+ * above the active heading" and "stop the window one short of the end" -- would
+ * both be off by a row and can land one past the last entry. The component
+ * already floors its own row count at one before calling this, so the floor is
+ * belt and braces; it is here because the alternative is a function whose
+ * answer for `rows = 0` is `active + 1`, which is a window starting below the
+ * heading it was asked to show.
  */
-function themeOf(context: Context): MarkdownTheme | undefined {
-  return (context as { theme?: MarkdownTheme }).theme
+export function tocWindowStart(active: number, total: number, rows: number): number {
+  if (active < 0 || total <= rows) return 0
+  const window = Math.max(1, rows)
+  return Math.min(Math.max(active - window + 1, 0), total - window)
 }
 
 /**
@@ -158,6 +260,35 @@ function spanProps(fg: string | undefined): { style?: { fg: string } } {
   return fg === undefined ? {} : { style: { fg } }
 }
 
+/**
+ * The style on one row of the table of contents.
+ *
+ * `reverse` rather than a brighter colour, because the sidebar's whole job is to
+ * be scanned rather than read, and the one difference a terminal theme cannot
+ * wash out is a row that inverts. A colour would have to be legible against
+ * whatever background the reader is running, which is a thing this plugin does
+ * not get to know; `reverse` is the terminal's own answer to "make this row
+ * obvious" and it works on any background.
+ *
+ * Bold on the active row as well, more quietly: reverse is a filled block, and a
+ * heading that also reads as *set apart* rather than merely *inverted* is easier
+ * to find again on the next scroll.
+ *
+ * Under `style` rather than as bare attributes, because the reconciler handles
+ * only `href` and `style` for a `TextNodeRenderable` -- which every `<span>` is
+ * -- and returns early before reaching anything else. A bare `reverse` or `bold`
+ * on a span is silently dropped. `createTextAttributes` reads both off the style
+ * object, which is why they are there rather than beside it.
+ *
+ * A fresh object per call rather than a shared constant, because `setProperty`
+ * ORs the attributes in -- `node.attributes |= createTextAttributes(value)` -- so
+ * an object handed out once and mutated in place would carry one row's highlight
+ * into every row drawn after it.
+ */
+export function tocEntryStyle(active: boolean): { style?: Record<string, string | true> } {
+  return active ? { style: { reverse: true, bold: true } } : spanProps("dim")
+}
+
 export const FileViewer: Component<FileViewerProps> = (props) => {
   const context = props.context
 
@@ -177,17 +308,88 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    */
   const file = readForView(props.path)
 
+  /*
+   * The terminal's width, as a signal rather than a read.
+   *
+   * Read off the renderer for the reason `FileTree` reads its height the same
+   * way: the sidebar slot reports no dimensions of its own, so the renderer is
+   * the only thing that knows how wide the screen is. Seeded from the renderer
+   * on mount and updated on `resize`, which is what makes a narrowed terminal
+   * take the sidebar away instead of leaving it drawn over the content.
+   *
+   * The initial value is `UNKNOWN_TERMINAL_WIDTH` rather than the renderer's
+   * current width. The renderer always has a width by the time a component
+   * mounts, but reading it here would subscribe this signal's own initialiser
+   * to nothing and hide the question of *when* the first measurement happens;
+   * taking it in an effect below means the first render is allowed to be "not
+   * measured yet", draw without the sidebar, and repaint with it once the
+   * measurement lands. That is the direction that fails safely.
+   */
+  const [terminalWidth, setTerminalWidth] = createSignal<number>(UNKNOWN_TERMINAL_WIDTH)
+
+  createEffect(() => {
+    /*
+     * One cast, at the only place the renderer's dimension and event surface
+     * meet the viewer's.
+     *
+     * `Context["renderer"]` is a `CliRenderer`, which has both `width` and the
+     * EventEmitter `on`/`off` the resize comes through -- but it is reached
+     * through `@opencode/plugin/tui/context`, which borrows those types from
+     * `@opentui/core`, a runtime package this plugin must not ship a copy of.
+     * `FileTree` reads the same renderer and casts the same way for the same
+     * reason, and the two casts are kept to their own files rather than shared
+     * because a shared one would be a module both of them import at runtime.
+     */
+    const renderer = context.renderer as
+      | {
+          width?: number
+          on?: (event: string, handler: () => void) => void
+          off?: (event: string, handler: () => void) => void
+        }
+      | undefined
+    if (!renderer) return
+
+    const measure = () => {
+      const next = renderer.width
+      if (typeof next === "number" && next > 0) setTerminalWidth(Math.floor(next))
+    }
+    measure()
+
+    renderer.on?.("resize", measure)
+    onCleanup(() => renderer.off?.("resize", measure))
+  })
+
   const lines = file.kind === "text" ? file.lines : []
   /*
    * Markdown is a different renderer, not a different colouring of the same one:
-   * `MarkdownRenderable` parses and lays out its own blocks, so it never sees the
-   * line-by-line span pipeline and does not need it. `buildSyntaxStyle` cannot
-   * return undefined -- it falls back to the empty style, which is what the host
-   * itself uses -- so there is no colour-driven fork back to the Prism path. A
-   * thin theme buys an uncoloured preview, never raw source.
+   * the old `MarkdownRenderable` parsed and laid out its own blocks inside a
+   * native handle, so it never saw the line-by-line span pipeline and said
+   * nothing about where anything ended up. It is replaced here by
+   * `MarkdownContentView`, which parses through `markdownParser` and lays out
+   * through `markdownLayout` -- the one implementation whose row numbers the
+   * table of contents reads. That is the whole reason the swap exists: a TOC
+   * that scrolls to a row computed by a second, separately-written layout is the
+   * defect that got the previous attempt reverted.
+   *
+   * `blocks` is a snapshot, for the reason `file` above is: Solid never re-runs
+   * a component body, so this is the document *this mount* shows, and opening a
+   * different file remounts the panel rather than handing a new path to an
+   * instance already on screen.
    */
   const markdown = isMarkdown(props.path) && file.kind === "text"
-  const syntaxStyle = markdown ? buildSyntaxStyle(themeOf(context)) : undefined
+  const blocks = markdown ? parseMarkdown(lines.join("\n")) : []
+  /*
+   * The TOC's own list, taken from the parser rather than from the layout.
+   *
+   * Not a second walk of the blocks looking for headings: `extractHeadings` is
+   * the same call `layoutBlocks` makes internally, so the indices the sidebar
+   * holds are the indices the positions map is keyed by. The two lists are not
+   * interchangeable by accident -- `layoutBlocks` skips a heading with no text,
+   * so a document whose `#` heading is empty has one more heading *block* than
+   * it has TOC entries -- and a sidebar that numbered its rows off the blocks
+   * would be one out from the first blank heading down.
+   */
+  const headings = markdown ? extractHeadings(blocks) : []
   const spans = markdown ? [] : tokenize(lines, props.path)
 
   /*
@@ -202,6 +404,29 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   let markdownBox: unknown
   const captureMarkdownBox = (el: unknown) => {
     markdownBox = el
+  }
+
+  /*
+   * The offset the markdown path is at, as the table of contents sees it.
+   *
+   * Read off the renderable by `markdownOffset` below rather than mirrored into
+   * this signal's value, and the reason is the one the scroll adapter gives:
+   * the scrollbar clamps, so the only position the reader can actually be at is
+   * the one the renderable reports. Mirroring the *request* would put the
+   * highlight off by exactly the overshoot -- the class of bug this feature
+   * exists to prevent. So the signal is written on every move the plugin makes,
+   * which is every move the keys make, purely to make the read reactive; its
+   * value is read for the dependency and not for the answer.
+   *
+   * `0` before the box is captured, which is a real offset and not a sentinel:
+   * a document at the top of the file draws its first heading on row 0, and
+   * `findActiveHeading` answers `0` for it there.
+   */
+  const [markdownScrollAt, setMarkdownOffset] = createSignal(0)
+  const markdownOffset = (): number => {
+    markdownScrollAt()
+    const box = markdownBox as { scrollTop?: number } | undefined
+    return typeof box?.scrollTop === "number" ? box.scrollTop : 0
   }
 
   /*
@@ -244,6 +469,14 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     // means guessing a bound the renderable has not published, and the one guess
     // this made was against a property that does not exist.
     box.scrollTo(next)
+    // Read back off the box rather than storing `next`: the scrollbar clamps,
+    // so `next` is where the reader asked to be and `box.scrollTop` is where
+    // the document actually is. The table of contents is driven off this
+    // number, and a highlight that follows the request rather than the result
+    // is off by exactly the overshoot -- the class of bug this feature exists
+    // to stop. Written as a signal purely so the effect below re-runs; the
+    // value itself is read off the renderable by `markdownOffset`.
+    setMarkdownOffset(box.scrollTop)
     // The repaint effect above reads the signal and `height`, and neither of
     // them moved: the scrollbox did. The renderer is demand-driven, so this is
     // the only thing that will ask for the frame that shows the result -- the
@@ -307,6 +540,125 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const gutterWidth = String(lines.length).length
 
   /*
+   * The heading positions the layout on screen produced, keyed by heading index.
+   *
+   * Seeded with an empty map rather than `null` so every reader below can be a
+   * plain call: `MarkdownContentView` hands a fresh map over in its own effect
+   * on mount, and the reads that happen before that -- the first paint, and any
+   * keypress in the gap -- are answered by an empty document, which is what a
+   * markdown file with no headings is anyway. `findActiveHeading` on an empty
+   * map is `-1`, and `-1` is carried forward as "no heading" all the way to the
+   * sidebar, which draws nothing highlighted. That is the whole of the
+   * `-1 is not a key` constraint: the value is compared, never looked up.
+   *
+   * The map itself is never written by anything here. It is the layout's, and
+   * the rows in it are 0-based and mean the row the heading's own text is drawn
+   * on. Copying it, adjusting it, or rebuilding one from the blocks would all be
+   * a second implementation of arithmetic that can disagree with the screen, and
+   * a TOC that scrolls to the wrong row is the bug this feature exists to make
+   * impossible.
+   */
+  const [headingPositions, setHeadingPositions] = createSignal<HeadingPositions>(new Map())
+
+  /*
+   * Where the layout puts each heading, for `findActiveHeading`.
+   *
+   * Handed `MarkdownContentView`'s own callback rather than a wrapper that
+   * computes anything: the component already recomputes on every width change
+   * and hands over a fresh map, and the whole point of the split between
+   * `markdownLayout` and `MarkdownContentView` is that there is one layout and
+   * the sidebar reads the numbers it produced.
+   */
+  const onHeadingPositions = (positions: HeadingPositions) => setHeadingPositions(positions)
+
+  /*
+   * The heading the reader is at, or `-1` when there is none.
+   *
+   * A derived read rather than stored state, so it cannot disagree with the two
+   * things it is derived from: the positions the current layout handed over and
+   * the offset the scrollbox is really at. Storing it would mean updating it in
+   * two places -- the layout callback and the scroll adapter -- and a resize
+   * that moved every row would leave the stored answer describing the layout
+   * before it.
+   *
+   * `findActiveHeading` is the only thing here that reads the map, and it is
+   * given the offset unmodified. The row it compares against is the row the
+   * heading is drawn on, so this offset is in the same coordinate space and no
+   * adjustment of any kind belongs between them: a "-1 looks nicer" would put
+   * the highlight one row off the heading it names.
+   */
+  const activeHeading = (): number => findActiveHeading(headingPositions(), markdownOffset())
+
+  /*
+   * How many columns the table of contents wants.
+   *
+   * Driven by the longest heading rather than fixed, because a sidebar of 30
+   * columns showing "Introduction" and truncating a 38-column heading is a
+   * sidebar that has decided what the reader is allowed to read. Capped at 40
+   * because past that the sidebar has stopped being a list of headings and
+   * started being the second half of the panel -- and a heading that long is
+   * better read in the document than in the index of it.
+   *
+   * A heading's own width is its text plus the indent its level earns, and the
+   * indent is `level - 1` because the top level is flush; see `TOC_INDENT`.
+   */
+  const tocWidth = (): number => {
+    let longest = 0
+    for (const heading of headings) {
+      const indent = Math.max(0, heading.level - 1) * TOC_INDENT.length
+      longest = Math.max(longest, indent + heading.text.length)
+    }
+    return Math.min(TOC_MAX_WIDTH, Math.max(TOC_MIN_WIDTH, longest))
+  }
+
+  /*
+   * Whether the sidebar is drawn at all.
+   *
+   * Three things have to be true, and each of them is a way the feature would
+   * otherwise be broken rather than absent:
+   *
+   *   - There is something to list. A document with no headings gets no sidebar,
+   *     because an empty frame beside the content is a decoration that costs 30
+   *     columns and says nothing.
+   *   - The terminal has been measured. `UNKNOWN_TERMINAL_WIDTH` stands for "we
+   *     do not know how wide this is", and guessing there means drawing a
+   *     sidebar at a width that may not exist -- which pushes the content off
+   *     the right edge rather than merely leaving it narrower.
+   *   - What is left of the terminal is worth reading. `MIN_CONTENT_WIDTH` is
+   *     the floor, and the comparison is against the terminal rather than
+   *     against `maxWidth`: the caller's preference is a ceiling on the content,
+   *     not a promise that the terminal is that wide.
+   */
+  const showToc = (): boolean => {
+    if (headings.length === 0) return false
+    const terminal = terminalWidth()
+    if (terminal <= 0) return false
+    return terminal - tocWidth() >= MIN_CONTENT_WIDTH
+  }
+
+  /*
+   * The columns the content column gets.
+   *
+   * `maxWidth` rather than the terminal's width, as a ceiling: the plugin hands
+   * the viewer a preference for how wide the content should be, and honouring it
+   * is the difference between a document laid out for the reader's window and
+   * one stretched across a terminal far wider than anybody wants to read.
+   * Clamped down to the terminal, because a content box wider than the screen
+   * is not "as wide as the reader asked for" in any sense they would recognise.
+   *
+   * One column, never zero. The layout floors its own width at one because a
+   * zero-column wrap divides by nothing, and the box this number sizes has to
+   * be at least as wide as the rows inside it or the document is clipped by its
+   * own frame rather than by the screen.
+   */
+  const contentWidth = (): number => {
+    const wanted = props.maxWidth ?? DEFAULT_MAX_WIDTH
+    const terminal = terminalWidth()
+    const ceiling = terminal > 0 ? Math.min(wanted, terminal) : wanted
+    return Math.max(1, showToc() ? ceiling - tocWidth() : ceiling)
+  }
+
+  /*
    * Hands the keymap the writer for whichever scrolling this path owns, rather
    * than a value, so the plugin can move it from outside without holding one.
    *
@@ -328,6 +680,25 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     props.scrollTo?.(markdownScroll)
   } else {
     props.scrollTo?.(setScroll)
+  }
+
+  /*
+   * Hands the keymap the heading state, on the markdown path only.
+   *
+   * Getters, not values, for the reason `HeadingState` documents: the positions
+   * are replaced on every layout and the active heading moves with every
+   * keypress, so a snapshot handed over at mount would be describing the
+   * document as it was when the panel opened. A caller that reads `positions()`
+   * at the moment of a keypress always gets the layout that is on screen.
+   *
+   * Markdown-only, because a code file has no headings and handing over an
+   * empty map would invite a keymap to navigate a document that has nothing to
+   * navigate. The absence of the call is the signal: `onHeadings` not having
+   * fired means "this file is not a markdown file", which is exactly the
+   * condition a keymap binding wants to gate on.
+   */
+  if (markdown) {
+    props.onHeadings?.({ positions: () => headingPositions(), active: activeHeading })
   }
 
   /*
@@ -361,13 +732,37 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     // and unreadable, which is why the test mounts the component with a getter
     // over a signal rather than with a number.
     props.height
+    /*
+     * The markdown path's own inputs, read for the same reason.
+     *
+     * `headingPositions` because the sidebar is drawn from it and the rows from
+     * the layout are drawn beside it: a resize replaces the map, and without
+     * this read the panel would keep highlighting the heading that was active
+     * under the old layout while the document under it had re-wrapped. The
+     * layout's own effect already asks for a frame when it recomputes, so this
+     * is not what paints the rows -- it is what makes *this* effect re-run so
+     * the sidebar's own state is recomputed against the new positions.
+     *
+     * `activeHeading` for the offset underneath it. It is a derived read
+     * (`headingPositions` plus the scrollbox's real `scrollTop`), and the
+     * scroll adapter writes `markdownScrollAt` on every move the plugin makes,
+     * so this line is what turns a keypress into a repaint of the highlight.
+     * Reading it rather than `activeHeading()`'s result is the same thing, and
+     * the call form is what keeps the dependency visible at the read.
+     *
+     * `contentWidth` because it decides whether there is a sidebar at all and
+     * how wide the content column is, and both of those change on a terminal
+     * resize that `props.height` never sees -- a window dragged narrower keeps
+     * its height and loses its width. `terminalWidth` is the signal underneath
+     * it, so this read subscribes to the resize directly.
+     */
+    if (markdown) {
+      headingPositions()
+      activeHeading()
+      contentWidth()
+    }
     context.renderer.requestRender()
   })
-
-  // TODO: Heading navigation sidebar — reverted because markdown rendered
-  // positions cannot be reliably mapped to scroll rows. Revisit when a
-  // proper position-mapping mechanism is available (e.g. search-based nav
-  // or a MarkdownRenderable that exposes rendered row positions).
 
   /*
    * One row per line of the file, always. The gutter is a prefix on the same
@@ -417,16 +812,83 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   )
 
   /*
+   * One row of the table of contents: an indent, the heading's text, and the
+   * highlight when this is the section being read.
+   *
+   * The indent is `level - 1` steps of `TOC_INDENT`, so the top level sits flush
+   * against the sidebar's left edge and each level below it steps right. A
+   * heading's text is never re-measured or re-wrapped here: the sidebar's width
+   * was decided from the longest of them, and `truncate` on the row is what
+   * handles the rounding.
+   *
+   * The highlight itself is `tocEntryStyle`, which carries the reasoning for
+   * reverse-over-colour and for the style-over-attribute choice.
+   */
+  const renderTocRow = (heading: HeadingInfo, index: number) => {
+    const indent = TOC_INDENT.repeat(Math.max(0, heading.level - 1))
+    return (
+      <text wrapMode="none" truncate>
+        <span {...tocEntryStyle(index === activeHeading())}>{`${indent}${heading.text}`}</span>
+      </text>
+    )
+  }
+
+  /*
+   * The table of contents itself: a column beside the content, listing every
+   * heading in the document in order.
+   *
+   * A plain `.map()` in the box's children rather than a `<For>`, for the reason
+   * the content rows give: the stub JSX runtime records a capitalised tag
+   * without invoking it, so a component inside would never run in a test and its
+   * rows would not be reachable. A `.map()` puts them directly in
+   * `props.children`, where a test can count them.
+   *
+   * The window is a slice rather than a scrollbox. A scrollbox would own its own
+   * offset in a renderable, which is precisely the state the previous attempt at
+   * this feature could not read -- the same reason the content column's
+   * scrollbox makes its offset a signal here. The sidebar's offset is a plain
+   * number this component owns, adjusted below to keep the active heading in
+   * view, and a list of a few dozen headings is not a document.
+   */
+  const renderToc = () => {
+    const width = tocWidth()
+    /*
+     * How many rows the sidebar has, and therefore which headings fit.
+     *
+     * `props.height` rather than the terminal's height: it is the panel's own
+     * measured budget with the chrome already subtracted, so the sidebar's window
+     * and the content's are the same number and the two columns end on the same
+     * row. One row is spent on the sidebar's own label, which is why the
+     * content below subtracts it.
+     */
+    const rows = Math.max(1, props.height - 1)
+
+    /*
+     * Keep the active heading on screen.
+     *
+     * `tocWindowStart` owns the arithmetic and the reasoning; the one line here
+     * is the call. `-1` is handled inside it rather than here because it is a
+     * real value `activeHeading` returns, not a sentinel this call site invents.
+     */
+    const start = tocWindowStart(activeHeading(), headings.length, rows)
+
+    return (
+      <box flexDirection="column" width={width} height={props.height} flexShrink={0}>
+        <text fg="dim" wrapMode="none" truncate flexShrink={0}>
+          {"Contents"}
+        </text>
+        {headings.slice(start, start + rows).map((heading, offset) => renderTocRow(heading, start + offset))}
+      </box>
+    )
+  }
+
+  /*
    * Markdown's own branch, ahead of the text one and returning through it
    * rather than into it: the scrollbox owns the scrolling, so everything the
    * text path does with `offset`, `rows` and the gutter would be work thrown
    * away. A separate return also keeps the two shapes from being threaded
    * together by a ternary, which is how a shared header ended up carrying a line
    * range for a file that has none.
-   *
-   * The `syntaxStyle` assertion is `buildSyntaxStyle`'s own guarantee rather
-   * than a guess: it falls back to `SyntaxStyle.create()` when the theme is
-   * thin, so the only way the body's variable is undefined is its other arm.
    */
   if (markdown) {
     /*
@@ -476,14 +938,61 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
      */
     return (
       <box flexDirection="row" justifyContent="center">
-        <box flexDirection="column" width={props.maxWidth ?? DEFAULT_MAX_WIDTH} height={props.height}>
+        {/*
+         * Both columns are `flexShrink={0}`.
+
+         * The content column's bound was already stated above and the sidebar's
+         * has to be stated the same way: OpenTUI renderables default to
+         * `flexShrink: 1`, and a row whose two children are narrower than the
+         * container does not shrink anything -- but the day the terminal is
+         * narrower than `contentWidth() + tocWidth()` by even a column, a
+         * shrinking sidebar would take its columns out of the *content*, and the
+         * layout would be wrapping the document for one width while the rows are
+         * drawn in another. `showToc` is what keeps that from happening by
+         * refusing to draw a sidebar that does not fit; these two say the same
+         * thing from the other end, for the case where the box's own width and
+         * the terminal's disagree about it.
+         */}
+        <box
+          flexDirection="column"
+          width={contentWidth()}
+          height={props.height}
+          flexShrink={0}
+        >
           <text fg="dim" wrapMode="none" truncate flexShrink={0}>
             {markdownHeader(file, props.path)}
           </text>
           <scrollbox flexGrow={1} flexBasis={0} ref={captureMarkdownBox}>
-            <markdown content={lines.join("\n")} syntaxStyle={syntaxStyle!} conceal />
+            {/*
+              The rows, from the one layout.
+
+              `MarkdownContentView` is handed `contentWidth` and not the content
+              box's own `width` because it draws at that width and the box has to
+              be exactly as wide as the rows inside it. Any disagreement between
+              the two and the document is wrapped for one width and drawn in
+              another, which puts every heading row the sidebar recorded on a row
+              the reader does not see it on.
+
+              No `syntaxStyle`. It is deliberately not a prop of this component:
+              `SyntaxStyle` is a native handle keyed by tree-sitter scope names,
+              consulted only by the tree-sitter pipeline inside
+              `MarkdownRenderable`, and nothing in this layout tokenizes with
+              tree-sitter. Blocks come from `marked` and fences from Prism, and
+              the chrome comes from the One Dark palette `highlight.ts` already
+              uses. Passing one would be a handle the component quietly ignores,
+              so `MarkdownContentView.test.ts` holds a `@ts-expect-error` over
+              the prop and this is the call site that would break first if it came
+              back.
+            */}
+            <MarkdownContentView
+              blocks={blocks}
+              contentWidth={contentWidth()}
+              context={context}
+              onHeadingPositions={onHeadingPositions}
+            />
           </scrollbox>
         </box>
+        {showToc() ? renderToc() : null}
       </box>
     )
   }
