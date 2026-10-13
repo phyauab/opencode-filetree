@@ -1117,6 +1117,46 @@ describe("the table of contents beside a markdown file", () => {
     expect(headings().active()).toBe(2)
   })
 
+  it("hands findActiveHeading the offset unmodified, so the boundary is the heading's own row", () => {
+    /*
+     * The offset is compared against the row a heading is *drawn on*, so no
+     * adjustment belongs between the getter and `findActiveHeading`. A "+1 looks
+     * better" would turn the sidebar one heading ahead of the reader for the
+     * whole stretch between two headings.
+     *
+     * Every other test here probes `active()` at a heading's own row, and at
+     * such a row `+1` is a no-op -- the next heading is a whole block away, not
+     * one row. The boundary is only observable *between* headings, so this one
+     * asks on the row above each heading as well as on the row itself.
+     *
+     * The rows come out of the layout rather than being written down, so the
+     * test says "one row above `## Two`" and not "row 3 of a document that
+     * happens to lay out this way".
+     *
+     * Verified by mutation: `findActiveHeading(headingPositions(), markdownOffset() + 1)`
+     * answers 1 and 2 for the two rows below, and this fails.
+     */
+    const path = makeFile("readme.md", "# One\n\na\n\n## Two\n\nb\n\n### Three\n\nc\n")
+    const { element, headings } = mountCapturingHeadings(path, 20)
+    renderContentView(element)
+    const box = attachScrollbox(element, 0, 400, 20)
+    const positions = headings().positions()
+    const at = (row: number) => {
+      box.scrollTop = row
+      return headings().active()
+    }
+
+    // On the heading's own row, it is the active one.
+    expect(at(positions.get(1)!)).toBe(1)
+    expect(at(positions.get(2)!)).toBe(2)
+
+    // One row above it, it is not -- the previous heading still owns the reader.
+    // The whole feature is that the highlight tracks the reader, and a reader on
+    // the row above `## Two` is still reading what came before it.
+    expect(at(positions.get(1)! - 1)).toBe(0)
+    expect(at(positions.get(2)! - 1)).toBe(1)
+  })
+
   it("reads the offset live, so a wheel scroll is answered without a repaint", () => {
     /*
      * What this actually verifies: `active()` reads the *renderable*, not a
