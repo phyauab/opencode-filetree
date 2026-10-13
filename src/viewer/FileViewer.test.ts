@@ -1543,6 +1543,60 @@ describe("a terminal too narrow for a table of contents", () => {
   })
 })
 
+describe("the code file path sizes its column like the markdown path", () => {
+  /*
+   * The code branch took `props.maxWidth ?? 150` straight, with no terminal in
+   * the expression at all. A code file on a 40-column terminal therefore drew a
+   * 150-column box, and the outer row centers its children, so a box wider than
+   * the screen loses columns off *both* edges -- the file is unreadable, not
+   * merely narrow.
+   *
+   * Every test that could have caught it used a markdown file, which has taken
+   * the clamped number since the sidebar landed.
+   */
+
+  const path = () => makeFile("main.ts", "const a = 1\nconst b = 2\n")
+  const at = (terminal: number, maxWidth?: number) =>
+    mount(path(), 20, createMockRenderer(terminal), { maxWidth })
+
+  it("never draws a box wider than the terminal", () => {
+    for (const terminal of [40, 60, 80, 100, 120]) {
+      expect({ terminal, width: contentColumnOf(at(terminal)).props.width }).toEqual({
+        terminal,
+        width: terminal,
+      })
+    }
+  })
+
+  it("never draws a box wider than the terminal, even with a larger preference set", () => {
+    for (const maxWidth of [150, 200, 400]) {
+      expect({ maxWidth, width: contentColumnOf(at(80, maxWidth)).props.width }).toEqual({
+        maxWidth,
+        width: 80,
+      })
+    }
+  })
+
+  it("still honours the reader's preference when it is the smaller of the two", () => {
+    // The clamp is a ceiling, not an override: a reader who asked for 50 columns
+    // on a 200-column terminal gets 50, as the markdown path already did.
+    expect(contentColumnOf(at(200, 50)).props.width).toBe(50)
+    expect(contentColumnOf(at(200, 100)).props.width).toBe(100)
+  })
+
+  it("agrees with what the markdown path would draw at the same width", () => {
+    // One ceiling for both branches, so the two can never drift apart again.
+    const markdown = makeFile("readme.md", "# One\n\ntext\n")
+    for (const terminal of [60, 80, 120]) {
+      const codeWidth = contentColumnOf(at(terminal)).props.width
+      const mdWidth = contentColumnOf(
+        mountCapturingHeadings(markdown, 20, { renderer: createMockRenderer(terminal) }).element,
+      ).props.width
+      expect({ terminal, codeWidth, mdWidth }).toEqual({ terminal, codeWidth, mdWidth })
+    }
+  })
+})
+
 describe("a terminal that changes width", () => {
   it("re-lays the document and moves the sidebar with it", () => {
     /*

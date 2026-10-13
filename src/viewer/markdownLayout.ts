@@ -137,19 +137,107 @@ export function spanProps(span: RowSpan): { style?: Record<string, string | true
 }
 
 /**
+ * How many columns one code point takes on screen.
+ *
+ * Terminals are not UTF-16. A CJK ideograph, a Hangul syllable, a fullwidth
+ * form and most emoji occupy two cells; a combining mark occupies none. This
+ * file used `String.length` throughout, which counts UTF-16 code units and so
+ * disagrees with the terminal in both directions at once: a CJK paragraph came
+ * out at half the width the terminal drew it, and a row was laid out believing it
+ * had twice the room it had. The row then met `wrapMode="none" truncate` and was
+ * cut off at the edge of the box rather than wrapped onto the next one.
+ *
+ * The ranges are the standard wide/tz ranges rather than a Unicode table: a full
+ * `East_Asian_Width` implementation is a data file this plugin would have to
+ * carry and keep current, and the ranges below cover everything a document of
+ * prose actually meets. A character outside them counts 1, which is the same
+ * answer `String.length` gave for all of ASCII and therefore changes nothing
+ * about how ordinary text lays out.
+ */
+function charWidth(codePoint: number): number {
+  // Zero-width: combining marks, joiners, variation selectors.
+  if (codePoint === 0x200d || (codePoint >= 0x0300 && codePoint <= 0x036f)) return 0
+  if (codePoint >= 0xfe00 && codePoint <= 0xfe0f) return 0
+  // Control characters take no columns of their own.
+  if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0
+
+  const wide =
+    (codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
+    (codePoint >= 0x2e80 && codePoint <= 0x303e) || // CJK radicals, Kangxi
+    (codePoint >= 0x3041 && codePoint <= 0x33ff) || // kana, Hangul compat, CJK compat
+    (codePoint >= 0x3400 && codePoint <= 0x4dbf) || // CJK ext A
+    (codePoint >= 0x4e00 && codePoint <= 0x9fff) || // CJK unified
+    (codePoint >= 0xa000 && codePoint <= 0xa4cf) || // Yi
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) || // Hangul syllables
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) || // CJK compat ideographs
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) || // CJK compat forms
+    (codePoint >= 0xff00 && codePoint <= 0xff60) || // fullwidth forms
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) || // fullwidth signs
+    (codePoint >= 0x1f300 && codePoint <= 0x1f64f) || // emoji
+    (codePoint >= 0x1f680 && codePoint <= 0x1f6ff) ||
+    (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd) // CJK ext B+
+
+  return wide ? 2 : 1
+}
+
+/** The columns a string takes on screen. */
+export function displayWidth(text: string): number {
+  let width = 0
+  // Code points, not code units: an emoji is one character drawn two columns
+  // wide, and iterating UTF-16 would count it as two characters.
+  for (const character of text) width += charWidth(character.codePointAt(0)!)
+  return width
+}
+
+/**
+ * The largest prefix of `text` that fits in `room` columns, or `""` if none does.
+ *
+ * Empty rather than "one character anyway": a character wider than the room left
+ * on the row belongs on the *next* row, and returning it here put it on this one
+ * and pushed the row a column past its budget -- which is the crop this whole
+ * change exists to remove. The caller ends the row and asks again with the whole
+ * budget, which is where such a character belongs.
+ *
+ * Split by code point rather than by index: a surrogate pair is one character and
+ * cutting between its halves would put a lone surrogate on a row.
+ */
+function takeColumns(text: string, room: number): string {
+  let width = 0
+  let end = 0
+  for (const character of text) {
+    const w = charWidth(character.codePointAt(0)!)
+    if (width + w > room) break
+    width += w
+    end += character.length
+  }
+  return end === 0 ? "" : text.slice(0, end)
+}
+
+/**
+ * `text` cut to at most `width` columns and padded out to exactly `width`.
+ *
+ * `padEnd` would do this for ASCII and get it wrong for everything else: it
+ * counts characters, so a cell of CJK text padded to its column width comes out
+ * short by a column per character and the table's `|` separators stop lining up.
+ */
+function fitColumns(text: string, width: number): string {
+  const taken = takeColumns(text, width)
+  const padding = width - displayWidth(taken)
+  return padding > 0 ? taken + " ".repeat(padding) : taken
+}
+
+/**
  * The columns a row of spans occupies.
  *
- * `String.length`, so a character outside the Basic Latin block is counted as
- * whatever JavaScript says it is rather than as the columns it actually takes on
- * screen. Every other width in this file is counted the same way -- including the
- * viewer's own gutter, which pads `String(lines.length)` -- so a document of wide
- * characters is laid out a little short of its real width and its rows truncate
- * a column or two early. Getting it right means a wcwidth per character, which is
- * a bigger change than this feature is.
+ * Measured in screen columns rather than `String.length`, for the reason
+ * `charWidth` gives. Every caller of this wants "how wide does this look", and
+ * a CJK document answering "about half of that" is what put double-width rows
+ * into a box that truncates them.
  */
 function widthOf(spans: RowSpan[]): number {
   let width = 0
-  for (const span of spans) width += span.text.length
+  for (const span of spans) width += displayWidth(span.text)
   return width
 }
 
@@ -246,7 +334,7 @@ function wrapSpans(spans: RowSpan[], width: number): Row[] {
 
   const push = (text: string, style: RowSpan): void => {
     row.push({ ...style, text })
-    used += text.length
+    used += displayWidth(text)
   }
   const endRow = (): void => {
     rows.push(row)
@@ -275,19 +363,40 @@ function wrapSpans(spans: RowSpan[], width: number): Row[] {
            * row's own arithmetic honest without costing the author their spacing.
            */
           if (used === 0 || used >= budget) continue
-          push(piece.text.slice(0, budget - used), piece.style)
+          push(takeColumns(piece.text, budget - used), piece.style)
           continue
         }
+        /*
+         * Words are measured and cut in columns, not in characters: twenty CJK
+         * characters are forty columns wide, and slicing at a character count
+         * would put twice that on the row.
+         */
         let word = piece.text
         while (word.length > 0) {
           const room = budget - used
-          if (word.length <= room) {
+          if (displayWidth(word) <= room) {
             push(word, piece.style)
             break
           }
-          if (room > 0) push(word.slice(0, room), piece.style)
-          word = word.slice(Math.max(room, 0))
+          const taken = room > 0 ? takeColumns(word, room) : ""
+          if (taken.length > 0) {
+            push(taken, piece.style)
+            word = word.slice(taken.length)
+          }
+          /*
+           * Whatever is left goes on a row of its own. The one case that cannot
+           * be fixed by ending the row is a character wider than a whole row --
+           * an ideograph in a one-column layout. Taking it then overshoots by one
+           * character and `truncate` cuts it, which beats a loop that never ends,
+           * and no real width gets there: the panel floor is thirty columns.
+           */
+          const head = word.length > 0 ? String.fromCodePoint(word.codePointAt(0)!) : ""
+          const unsatisfiable = taken.length === 0 && displayWidth(head) > budget
           endRow()
+          if (unsatisfiable) {
+            push(word, piece.style)
+            break
+          }
         }
       }
     }
@@ -597,8 +706,10 @@ function appendTable(walk: Walk, header: string[], rows: string[][]): void {
 
   const widths: number[] = []
   for (let column = 0; column < columns; column++) {
-    let width = (header[column] ?? "").length
-    for (const row of rows) width = Math.max(width, (row[column] ?? "").length)
+    // Measured in screen columns like everything else, so a CJK cell is given
+    // the two columns per character it actually needs rather than one.
+    let width = displayWidth(header[column] ?? "")
+    for (const row of rows) width = Math.max(width, displayWidth(row[column] ?? ""))
     widths.push(width)
   }
   // Three per cell for ` x ` and the pipes, plus one for the closing pipe.
@@ -607,8 +718,8 @@ function appendTable(walk: Walk, header: string[], rows: string[][]): void {
   const line = (cells: string[]): RowSpan[] => {
     const spans: RowSpan[] = [{ text: "|", fg: RULE_COLOR }]
     for (let column = 0; column < columns; column++) {
-      const cell = (cells[column] ?? "").slice(0, widths[column]!)
-      spans.push({ text: ` ${cell.padEnd(widths[column]!, " ")} ` }, { text: "|", fg: RULE_COLOR })
+      const cell = fitColumns(cells[column] ?? "", widths[column]!)
+      spans.push({ text: ` ${cell} ` }, { text: "|", fg: RULE_COLOR })
     }
     return [...walk.prefix, ...spans]
   }

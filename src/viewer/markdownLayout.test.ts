@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { layoutBlocks, type Row } from "./markdownLayout"
+import { layoutBlocks, displayWidth, type Row } from "./markdownLayout"
 import { parseMarkdown, type MarkdownBlock } from "./markdownParser"
 
 /** One laid-out row, as the text it draws. */
@@ -455,5 +455,114 @@ describe("a block nothing can draw", () => {
     // one block, so the arithmetic is 8 + 7 separators + 2 extra table rows.
     expect(rows).toHaveLength(17)
     expect(rows).toContainEqual([])
+  })
+})
+
+
+/**
+ * Display columns, the way a terminal counts them.
+ *
+ * Deliberately independent of the one under test: this is the yardstick the
+ * layout is measured against, so it cannot be the same function.
+ */
+function columnsOf(text: string): number {
+  let w = 0
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!
+    if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) continue
+    const wide =
+      (cp >= 0x1100 && cp <= 0x115f) ||
+      (cp >= 0x2e80 && cp <= 0xa4cf) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xff00 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6)
+    w += wide ? 2 : 1
+  }
+  return w
+}
+
+function widestRow(rows: { text: string }[][]): number {
+  return rows.reduce((widest, row) => {
+    const w = row.reduce((n, span) => n + columnsOf(span.text), 0)
+    return w > widest ? w : widest
+  }, 0)
+}
+
+describe("rows fit the column they are drawn in", () => {
+  /*
+   * Every row is `<text wrapMode="none" truncate>` in a box of exactly the width
+   * the layout was given, so a row wider than that budget is not wrapped by the
+   * terminal -- it is cut off at the edge. That is the bug.
+   */
+
+  it("keeps ascii prose inside the width", () => {
+    const doc = "A fairly long paragraph of ordinary English prose that runs past any narrow column and must wrap.\n"
+    for (const width of [30, 40, 50, 80]) {
+      const { rows } = layoutBlocks(parseMarkdown(doc), width)
+      expect({ width, widest: widestRow(rows) }).toEqual({ width, widest: width })
+    }
+  })
+
+  it("keeps cjk prose inside the width", () => {
+    // The regression: `String.length` counts each of these as 1 column while the
+    // terminal draws 2, so the layout believed it had twice the room it had and
+    // emitted rows at double the width. They were then truncated at the box edge.
+    const doc = "这是一段很长的中文段落，用来测试宽字符在换行的时候是否被正确计算，不会超出边框。".repeat(3) + "\n"
+    for (const width of [30, 40, 70]) {
+      const { rows } = layoutBlocks(parseMarkdown(doc), width)
+      expect(widestRow(rows)).toBeLessThanOrEqual(width)
+    }
+  })
+
+  it("keeps mixed-width prose inside the width", () => {
+    const doc = "Mixed ASCII 与中文 mixed together 混排文本 in one paragraph 段落 to wrap 换行 properly.\n"
+    for (const width of [24, 40, 60]) {
+      const { rows } = layoutBlocks(parseMarkdown(doc), width)
+      expect(widestRow(rows)).toBeLessThanOrEqual(width)
+    }
+  })
+
+  it("keeps a heading on one row, wrapped or not", () => {
+    /*
+     * Headings are one row by design and truncate when they do not fit -- that is
+     * the same for ASCII today, so it is not part of this regression. What is
+     * asserted here is the narrower claim that a wide-character heading still
+     * occupies exactly one row, i.e. that the wrap fix did not quietly start
+     * breaking headings across rows (which would move every heading below it and
+     * desynchronise the sidebar's row numbers from the screen).
+     */
+    const doc = "# 这是一个非常非常长的中文标题，用来测试标题是否也会超出边框\n"
+    const { rows, headingRows } = layoutBlocks(parseMarkdown(doc), 30)
+    const headingRow = rows[headingRows.get(0)!]!
+    expect(headingRow).toHaveLength(1)
+  })
+
+  it("keeps a list and a quote inside the width", () => {
+    const doc = "- 这是一个非常长的列表项，里面有很多很多的中文字符需要换行\n\n> 这是一个非常长的引用段落\n"
+    for (const width of [30, 50]) {
+      const { rows } = layoutBlocks(parseMarkdown(doc), width)
+      expect(widestRow(rows)).toBeLessThanOrEqual(width)
+    }
+  })
+
+  it("keeps a cjk table inside the width", () => {
+    const doc = "| 名称 | 说明 |\n| --- | --- |\n| 第一项 | 这是很长的说明文字 |\n"
+    for (const width of [40, 70]) {
+      const { rows } = layoutBlocks(parseMarkdown(doc), width)
+      expect(widestRow(rows)).toBeLessThanOrEqual(width)
+    }
+  })
+
+  it("agrees with an independent column count", () => {
+    // The yardstick above is hand-written, which is the point -- but it could
+    // itself be wrong. This pins `displayWidth` against the two facts that
+    // matter most and are easy to get backwards: ASCII is one column, and CJK is
+    // two. A surrogate pair is one character, so an emoji must not count as two.
+    expect(displayWidth("hello")).toBe(5)
+    expect(displayWidth("中文")).toBe(4)
+    expect(displayWidth("a中b")).toBe(4)
+    expect(displayWidth("🚀")).toBe(2)
+    expect(displayWidth("")).toBe(0)
   })
 })

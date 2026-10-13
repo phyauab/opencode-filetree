@@ -1157,7 +1157,20 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
 
   return (
     <box flexDirection="row" justifyContent="center">
-      <box flexDirection="column" width={props.maxWidth ?? DEFAULT_MAX_WIDTH}>
+      {/*
+         * `contentCeiling()`, not `maxWidth` directly.
+         *
+         * The markdown branch above already sizes its column this way, and this
+         * one did not: it took the preference at face value, so a code file on a
+         * 40-column terminal drew a 150-column box. The outer row centers it, so
+         * a box wider than the screen loses columns off *both* edges and the
+         * file is unreadable rather than merely narrow.
+         *
+         * `contentCeiling()` is `min(maxWidth, terminal)`, which is the same
+         * ceiling the content is laid out against and the one the sidebar's
+         * fit decision uses -- three numbers that cannot disagree.
+         */}
+        <box flexDirection="column" width={contentCeiling()}>
         {/* "gray" rather than "dim": `parseColor` accepts CSS colour names and
             hex only, and a name it does not know does not fall back to the theme
             -- it falls back to magenta. Every header here was magenta until this. */}
