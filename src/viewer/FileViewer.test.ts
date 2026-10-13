@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createSignal } from "solid-js"
 import type { RGBA } from "@opentui/core"
-import { FileViewer, VIEWER_ROWS_CHROME, tocWindowStart, tocEntryStyle } from "./FileViewer"
+import { FileViewer, SCROLLBAR_GUTTER, VIEWER_ROWS_CHROME, tocWindowStart, tocEntryStyle } from "./FileViewer"
 import { tocColors } from "./markdown"
 import { MarkdownContentView } from "./MarkdownContentView"
 import { MAX_VIEW_LINES } from "./readForView"
@@ -1314,10 +1314,10 @@ describe("the table of contents beside a markdown file", () => {
     // The two columns have to add up to the terminal. A content box that still
     // claimed the full width would push the sidebar off the right edge.
     expect(content + sidebar).toBe(120)
-    // And the layout is handed the content column's own width, so the rows are
-    // wrapped for the space they are drawn in rather than for a number nobody
-    // measured.
-    expect(contentViewOf(element).props.contentWidth).toBe(content)
+    // And the layout is handed the content column's width *less the scrollbox's
+    // scrollbar*, so the rows are wrapped for the space they are actually drawn in
+    // rather than for a number the terminal will not honour.
+    expect(contentViewOf(element).props.contentWidth).toBe(content - SCROLLBAR_GUTTER)
   })
 
   it("states both columns' widths rather than letting them be negotiated", () => {
@@ -1543,6 +1543,60 @@ describe("a terminal too narrow for a table of contents", () => {
   })
 })
 
+/** The width the document is laid out in, as handed to MarkdownContentView. */
+function documentWidthOf(element: any): number {
+  const content = elements(element?.props?.children).filter((c: any) => c.type === "box")[0]
+  const scrollbox = elements(content?.props?.children).find((c: any) => c.type === "scrollbox")
+  const view = elements(scrollbox?.props?.children).find((c: any) => c?.props?.blocks !== undefined)
+  return view?.props?.contentWidth
+}
+
+describe("the document is laid out in the width it is drawn in", () => {
+  /*
+   * The scrollbox's vertical scrollbar is a *sibling* of the wrapper that holds
+   * the content, so it takes columns out of the content's drawing area. Laying
+   * the document out at the box's full width wrapped every row two columns too
+   * wide and the scrollbar cut the tail off each one -- "terminal" showing as
+   * "termin", on every line of a long document.
+   */
+
+  it("reserves the scrollbar's columns", () => {
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    for (const terminal of [80, 120, 200]) {
+      const element = mount(path, 20, createMockRenderer(terminal))
+      const box = elements(element.props.children).filter((c: any) => c.type === "box")[0].props.width
+      expect({ terminal, box, document: documentWidthOf(element) }).toEqual({
+        terminal,
+        box,
+        document: box - SCROLLBAR_GUTTER,
+      })
+    }
+  })
+
+  it("never lays the document out wider than the box it is drawn in", () => {
+    // The invariant that matters: the layout width can never exceed the box.
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    for (const terminal of [40, 60, 80, 120, 200]) {
+      for (const maxWidth of [undefined, 150, 200]) {
+        const element = mount(path, 20, createMockRenderer(terminal), { maxWidth })
+        const box = elements(element.props.children).filter((c: any) => c.type === "box")[0].props.width
+        expect({ terminal, maxWidth, document: documentWidthOf(element) }).toEqual({
+          terminal,
+          maxWidth,
+          document: Math.min(box, box - SCROLLBAR_GUTTER),
+        })
+      }
+    }
+  })
+
+  it("still leaves at least one column to draw in", () => {
+    // The floor: a document one column wide is degenerate, but it must not go
+    // to zero or negative, which would divide by nothing in the layout.
+    const path = makeFile("readme.md", "# One\n\ntext\n")
+    expect(documentWidthOf(mount(path, 20, createMockRenderer(40)))).toBeGreaterThanOrEqual(1)
+  })
+})
+
 describe("the code file path sizes its column like the markdown path", () => {
   /*
    * The code branch took `props.maxWidth ?? 150` straight, with no terminal in
@@ -1651,12 +1705,24 @@ describe("a terminal that changes width", () => {
     const narrow = at(40)
     const narrowPositions = [...narrow.headings().positions().entries()]
 
-    // The narrow terminal cannot fit content plus a 30-column sidebar, so the
-    // sidebar is gone and the content has the whole thing.
-    expect(narrowPositions).toEqual(widePositions)
+    /*
+     * The narrow terminal cannot fit content plus a 30-column sidebar, so the
+     * sidebar is gone and the content has the whole thing.
+     *
+     * The positions are *not* the same as the wide ones, and that is correct: the
+     * paragraph between the headings is 39 columns, which fits the 88 the wide
+     * terminal leaves and does not fit the 38 the narrow one does, so it wraps
+     * onto a second row here and the second heading moves down one. The point of
+     * the test is that the resize re-lays the document out and hands over the new
+     * numbers -- which is exactly what this difference is.
+     */
+    expect(narrowPositions).toEqual([
+      [0, 0],
+      [1, 5],
+    ])
     expect(tocOf(narrow.element)).toBeUndefined()
     expect(contentColumnOf(narrow.element).props.width).toBe(40)
-    expect(contentViewOf(narrow.element).props.contentWidth).toBe(40)
+    expect(contentViewOf(narrow.element).props.contentWidth).toBe(40 - SCROLLBAR_GUTTER)
 
     /*
      * A frame was asked for on the way. The renderer is demand-driven and a
@@ -1921,9 +1987,10 @@ describe("the table of contents, end to end", () => {
       [1, 6],
       [2, 12],
     ])
-    // And the layout is drawing at the narrower width, so this is a re-layout
-    // rather than a second map of the same rows.
-    expect(contentViewOf(narrow).props.contentWidth).toBe(31)
+    // And the layout is drawing at the narrower width -- the content column's own
+    // width less the scrollbar -- so this is a re-layout rather than a second map
+    // of the same rows.
+    expect(contentViewOf(narrow).props.contentWidth).toBe(31 - SCROLLBAR_GUTTER)
 
     /*
      * The row that was right, and is now wrong.
@@ -1957,7 +2024,7 @@ describe("the table of contents, end to end", () => {
     // The document is not squeezed into what is left over: it gets the terminal
     // itself, and the layout is told that rather than a number nobody drew.
     expect(contentColumnOf(element).props.width).toBe(40)
-    expect(contentViewOf(element).props.contentWidth).toBe(40)
+    expect(contentViewOf(element).props.contentWidth).toBe(40 - SCROLLBAR_GUTTER)
     // The document is still the document -- a sidebar-less viewer is a working
     // viewer, not an empty one.
     expect(contentViewOf(element).props.blocks).toHaveLength(4)
@@ -2012,7 +2079,7 @@ describe("the table of contents, end to end", () => {
     // Narrow to start: no sidebar, and the document has the whole terminal.
     const narrow = viewer.paint()
     expect(columnsOf(narrow)).toHaveLength(1)
-    expect(contentViewOf(narrow).props.contentWidth).toBe(40)
+    expect(contentViewOf(narrow).props.contentWidth).toBe(40 - SCROLLBAR_GUTTER)
 
     // Wide again: the sidebar returns, and the content column is what is left
     // of the terminal after it.
@@ -2021,7 +2088,7 @@ describe("the table of contents, end to end", () => {
     expect(columnsOf(wide)).toHaveLength(2)
     expect(tocWidthOf(wide)).toBe(30)
     expect(contentColumnOf(wide).props.width).toBe(90)
-    expect(contentViewOf(wide).props.contentWidth).toBe(90)
+    expect(contentViewOf(wide).props.contentWidth).toBe(90 - SCROLLBAR_GUTTER)
     // The document came back with it: three headings, and all three are named.
     expect(tocRowsOf(wide)).toEqual(["Contents", "One", "  Two", "    Three"])
 
@@ -2030,7 +2097,7 @@ describe("the table of contents, end to end", () => {
     viewer.settings.terminal = 40
     const back = viewer.paint()
     expect(columnsOf(back)).toHaveLength(1)
-    expect(contentViewOf(back).props.contentWidth).toBe(40)
+    expect(contentViewOf(back).props.contentWidth).toBe(40 - SCROLLBAR_GUTTER)
     expect(tocWidthOf(back)).toBe(0)
   })
 })

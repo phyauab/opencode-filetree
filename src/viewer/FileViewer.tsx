@@ -62,6 +62,15 @@ const MIN_CONTENT_WIDTH = 30
  */
 const UNKNOWN_TERMINAL_WIDTH = 0
 
+/**
+ * Columns the scrollbox's vertical scrollbar takes out of the content's width.
+ *
+ * Two, because that is the most its slider can be -- `Math.max(1, Math.min(2,
+ * width))` -- and its arrows are off by default. `documentWidth` below says why
+ * this has to be reserved rather than measured.
+ */
+export const SCROLLBAR_GUTTER = 2
+
 export type FileViewerProps = {
   path: string
   /** Rows available for content, after the panel has taken its chrome off. */
@@ -816,6 +825,35 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   }
 
   /*
+   * The columns a document is actually laid out in, which is fewer than the
+   * content column's own width.
+   *
+   * The document lives inside a `ScrollBoxRenderable`, and that renderable's root
+   * is a row of exactly two things: the wrapper holding the viewport and the
+   * content, and the vertical scrollbar, which is added as a *sibling* rather
+   * than overlaid. So whatever width the scrollbar takes is taken out of the
+   * content's drawing area. Its slider is `Math.max(1, Math.min(2, this.width))`
+   * -- one or two columns -- and arrows are off by default, so two is the whole
+   * of it.
+   *
+   * Laying the document out at the box's full width and letting it draw in two
+   * columns less is what cropped every line: each row was wrapped for a width two
+   * wider than the one it was drawn in, so the tail of every line was cut at the
+   * scrollbar. It reads as "terminal" showing as "termin".
+   *
+   * It only shows on a document long enough to scroll, because the scrollbar
+   * hides itself when everything fits -- which is why a short file looked right
+   * and the first long one did not.
+   *
+   * Reserved unconditionally rather than measured. Measuring means reading the
+   * scrollbox's viewport width after layout, which is a value this document's own
+   * layout decides, so it feeds back into its own input. Two columns of slack on a
+   * document that scrolls is invisible; a feedback loop that can settle on the
+   * wrong width is not.
+   */
+  const documentWidth = (): number => Math.max(1, contentWidth() - SCROLLBAR_GUTTER)
+
+  /*
    * Hands the keymap the writer for whichever scrolling this path owns, rather
    * than a value, so the plugin can move it from outside without holding one.
    *
@@ -1124,12 +1162,13 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
             {/*
               The rows, from the one layout.
 
-              `MarkdownContentView` is handed `contentWidth` and not the content
-              box's own `width` because it draws at that width and the box has to
-              be exactly as wide as the rows inside it. Any disagreement between
-              the two and the document is wrapped for one width and drawn in
-              another, which puts every heading row the sidebar recorded on a row
-              the reader does not see it on.
+              `MarkdownContentView` is handed `documentWidth` -- the content
+              column's width less the scrollbox's scrollbar -- and not the content
+              box's own `width`. The box is the wider of the two on purpose: the
+              document is wrapped for the width it is *drawn* in, and the two
+              columns the scrollbar takes are not available to draw in. Handing it
+              the box's width wrapped every row two columns too wide and the
+              scrollbar cut the tail off each one.
 
               No `syntaxStyle`. It is deliberately not a prop of this component:
               `SyntaxStyle` is a native handle keyed by tree-sitter scope names,
@@ -1144,7 +1183,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
             */}
             <MarkdownContentView
               blocks={blocks}
-              contentWidth={contentWidth()}
+              contentWidth={documentWidth()}
               context={context}
               onHeadingPositions={onHeadingPositions}
             />
