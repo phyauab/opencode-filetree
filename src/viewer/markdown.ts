@@ -257,6 +257,74 @@ function tokenValue(theme: MarkdownTheme | undefined, path: TokenPath): RGBA | u
 }
 
 /**
+ * Colours the viewer draws with when they are chrome rather than content.
+ *
+ * The sidebar reads the theme for the same reason this module does, and it was
+ * written without doing so: it hardcoded `fg: "dim"` for an inactive row and
+ * `{ reverse: true }` for the active one. Neither is a colour. `"dim"` misses the
+ * host's `CSS_COLOR_NAMES` table and falls through to the hex parser, which
+ * rejects it and returns magenta; `reverse` with no `fg` left `node.fg` on the
+ * terminal default and inverted it, which on a light background is light text on
+ * a light block. The result was a pink sidebar nobody could read, and a pink
+ * gutter on every code file.
+ *
+ * A colour the host cannot resolve is not a neutral fallback -- it is magenta --
+ * so every value here is a literal or a theme token, never a name.
+ */
+export interface TocColors {
+  /** Foreground for chrome the reader is not currently on: inactive rows, the gutter. */
+  inactive: RGBA | string
+  /** Foreground for the section the reader is in, drawn on `activeBg`. */
+  activeFg: RGBA | string
+  /** Background block behind the section the reader is in. */
+  activeBg: RGBA | string
+}
+
+/**
+ * What the viewer draws when the theme carries none of the tokens it needs.
+ *
+ * Two sets, one per mode, chosen so the active row is a readable block either
+ * way. `#808080` is the host's own `gray`; each set is the same two-tone
+ * relationship `text.muted` / `background.base` express in a real theme.
+ */
+const DARK_FALLBACK: TocColors = { inactive: "#808080", activeFg: "#1E1E1E", activeBg: "#808080" }
+const LIGHT_FALLBACK: TocColors = { inactive: "#6C6C6C", activeFg: "#FFFFFF", activeBg: "#6C6C6C" }
+
+/**
+ * The theme's muted text colour, or a literal for the mode when it has none.
+ *
+ * Shared by the sidebar's inactive rows and the code file's line-number gutter,
+ * because both want the same thing: chrome that is visibly subordinate to the
+ * content beside it, in whatever theme the reader is running.
+ */
+export function mutedText(theme: MarkdownTheme | undefined, themeMode: "dark" | "light"): RGBA | string {
+  return tokenValue(theme, "text.muted") ?? (themeMode === "light" ? LIGHT_FALLBACK.inactive : DARK_FALLBACK.inactive)
+}
+
+/**
+ * The sidebar's three colours, from the theme, with a literal fallback per mode.
+ *
+ * `text.muted` and `background.base` are the two ends of the host's own contrast
+ * pair, so drawing the active row as "muted fill, background-coloured text" is an
+ * inversion that is legible in either mode without asking which one is running.
+ *
+ * The fallbacks exist because a theme is user config: it can be absent, partial,
+ * or carry tokens this module does not know.
+ */
+export function tocColors(theme: MarkdownTheme | undefined, themeMode: "dark" | "light"): TocColors {
+  const fallback = themeMode === "light" ? LIGHT_FALLBACK : DARK_FALLBACK
+
+  return {
+    inactive: mutedText(theme, themeMode),
+    // `background.base` as the foreground is what makes the block legible: it is
+    // the colour the theme paints *behind* the muted fill, so the pair cannot
+    // collapse into light-on-light the way a defaulted `reverse` did.
+    activeFg: tokenValue(theme, "background.base") ?? fallback.activeFg,
+    activeBg: tokenValue(theme, "text.muted") ?? fallback.activeBg,
+  }
+}
+
+/**
  * One colour, spelled for the memo key.
  *
  * The channels rather than `toString()`: a colour that reaches this has already

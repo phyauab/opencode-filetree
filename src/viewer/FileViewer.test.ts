@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { createSignal } from "solid-js"
 import type { RGBA } from "@opentui/core"
 import { FileViewer, VIEWER_ROWS_CHROME, tocWindowStart, tocEntryStyle } from "./FileViewer"
+import { tocColors } from "./markdown"
 import { MarkdownContentView } from "./MarkdownContentView"
 import { MAX_VIEW_LINES } from "./readForView"
 
@@ -1030,7 +1031,7 @@ describe("the table of contents beside a markdown file", () => {
 
     // Deliberately NOT running the content view, so the positions stay empty.
     for (let row = 1; row < tocRowsOf(element).length; row++) {
-      expect(tocRowStyle(element, row)).toEqual({ fg: "dim" })
+      expect(tocRowStyle(element, row)).toEqual({ fg: tocColors(undefined, "dark").inactive })
     }
   })
 
@@ -1773,7 +1774,7 @@ describe("the table of contents, end to end", () => {
      * tests). Closing the distance between them needs a real reconciler.
      */
     const firstPaint = viewer.paint()
-    expect(tocRowStyle(firstPaint, 1)).toEqual({ fg: "dim" })
+    expect(tocRowStyle(firstPaint, 1)).toEqual({ fg: tocColors(undefined, "dark").inactive })
 
     // A second paint, so the layout's own numbers are the ones in play.
     const element = viewer.paint()
@@ -2140,11 +2141,93 @@ describe("tocWindowStart", () => {
 })
 
 describe("tocEntryStyle", () => {
-  it("inverts the active row and dims every other", () => {
-    // Reverse rather than a colour, because a colour has to be legible against
-    // whatever background the reader is running and `reverse` works on any.
-    expect(tocEntryStyle(true)).toEqual({ style: { reverse: true, bold: true } })
-    expect(tocEntryStyle(false)).toEqual({ style: { fg: "dim" } })
+  /**
+   * The host's own colour resolution, mirrored.
+   *
+   * `setProperty` reaches `node.fg = value.fg ? parseColor(value.fg) : node.fg`,
+   * and `parseColor` (`opentui-types-core/src/lib/RGBA.ts`) looks a name up in
+   * `CSS_COLOR_NAMES` and falls through to `hexToRgb` for anything else -- which
+   * rejects a non-hex string and returns `RGBA.fromValues(1, 0, 1, 1)`, magenta,
+   * with a `console.warn` nobody sees in a TUI.
+   *
+   * So a colour that is not in the table is not "slightly wrong": it is magenta.
+   * Every other assertion in this file checks the *shape* of the style. This one
+   * checks the shape resolves, which is the half that was never checked and the
+   * half that put a pink sidebar on screen.
+   */
+  function resolvesToAColour(value: unknown): boolean {
+    if (value === undefined || value === null) return false
+    if (typeof value === "object") return true // an RGBA from the theme
+    if (typeof value !== "string") return false
+    const name = value.toLowerCase()
+    if (name === "transparent") return true
+    if (CSS_COLOR_NAMES[name] !== undefined) return true
+    const hex = value.replace(/^#/, "")
+    return /^[0-9A-Fa-f]{6}$/.test(hex) || /^[0-9A-Fa-f]{8}$/.test(hex)
+  }
+
+  const CSS_COLOR_NAMES: Record<string, string> = {
+    black: "#000000", white: "#FFFFFF", red: "#FF0000", green: "#008000", blue: "#0000FF",
+    yellow: "#FFFF00", cyan: "#00FFFF", magenta: "#FF00FF", silver: "#C0C0C0", gray: "#808080",
+    grey: "#808080", maroon: "#800000", olive: "#808000", lime: "#00FF00", aqua: "#00FFFF",
+    teal: "#008080", navy: "#000080", fuchsia: "#FF00FF", purple: "#800080", orange: "#FFA500",
+    brightblack: "#666666", brightred: "#FF6666", brightgreen: "#66FF66", brightblue: "#6666FF",
+    brightyellow: "#FFFF66", brightcyan: "#66FFFF", brightmagenta: "#FF66FF", brightwhite: "#FFFFFF",
+  }
+
+  it("gives every colour it hands the reconciler one the host can resolve", () => {
+    /*
+     * The regression this file exists to prevent. `fg: "dim"` is not a dim
+     * colour -- `dim` is a *text attribute* (`TextAttributes.DIM`), and as a
+     * colour name it misses the table and lands on magenta. The active row had
+     * no `fg` at all, so `node.fg` kept the terminal default and `reverse` turned
+     * it into light text on a light block.
+     */
+    const colors = tocColors(undefined, "dark")
+    for (const active of [true, false]) {
+      const style = tocEntryStyle(active, colors).style
+      for (const [key, value] of Object.entries(style)) {
+        if (key === "bold" || key === "italic" || key === "underline") continue
+        expect({ key, resolves: resolvesToAColour(value) }).toEqual({ key, resolves: true })
+      }
+    }
+  })
+
+  it("names no colour that the host would read as magenta", () => {
+    // A blunt belt-and-braces restatement: the exact string that produced the
+    // pink, so a future edit reintroducing it fails here by name.
+    const colors = tocColors(undefined, "dark")
+    expect(JSON.stringify(tocEntryStyle(false, colors))).not.toContain('"dim"')
+  })
+
+  it("reads its colours off the theme rather than hardcoding them", () => {
+    /*
+     * The theme is the source. A muted grey that happens to suit one terminal is
+     * unreadable on the next, and the first version of this function hardcoded
+     * colours with no theme in them at all.
+     */
+    const theme = { text: { muted: { r: 0.2, g: 0.3, b: 0.4, a: 1 } }, background: { base: { r: 0.9, g: 0.9, b: 0.9, a: 1 } } }
+    // Cast because `MarkdownTheme` names the host's `RGBA` *class*, while the
+    // reader it goes through is a duck-type check (`isRgba` asks for four numeric
+    // channels). A plain literal is therefore exactly what it accepts, and is
+    // what a test can write; the class is what the host actually hands over.
+    const colors = tocColors(theme as unknown as Parameters<typeof tocColors>[0], "dark")
+
+    expect(colors.inactive).toEqual({ r: 0.2, g: 0.3, b: 0.4, a: 1 })
+    expect(colors.activeBg).toEqual({ r: 0.2, g: 0.3, b: 0.4, a: 1 })
+    expect(colors.activeFg).toEqual({ r: 0.9, g: 0.9, b: 0.9, a: 1 })
+  })
+
+  it("gives the active row both ends of the pair, never one", () => {
+    /*
+     * `reverse` with no `fg` leaves `node.fg` on the terminal default, and the
+     * reconciler then inverts a default against a default background. Both ends
+     * named is what stops the row landing light-on-light.
+     */
+    const style = tocEntryStyle(true, tocColors(undefined, "dark")).style
+
+    expect(style.fg).toBeDefined()
+    expect(style.bg).toBeDefined()
   })
 
   it("hands out a fresh object each call", () => {
@@ -2153,8 +2236,9 @@ describe("tocEntryStyle", () => {
      * A shared constant would accumulate -- every row after the highlighted one
      * would inherit its highlight, and un-highlighting would not take.
      */
-    const first = tocEntryStyle(true)
-    const second = tocEntryStyle(true)
+    const colors = tocColors(undefined, "dark")
+    const first = tocEntryStyle(true, colors)
+    const second = tocEntryStyle(true, colors)
     expect(first).not.toBe(second)
     expect(first.style).not.toBe(second.style)
   })

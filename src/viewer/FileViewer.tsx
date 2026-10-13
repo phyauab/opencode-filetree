@@ -1,8 +1,9 @@
 import { createEffect, createSignal, onCleanup, type Component, type Setter } from "solid-js"
 import type { Context } from "@opencode/plugin/tui/context"
+import type { RGBA } from "@opentui/core"
 import { basename } from "node:path"
 import { highlightLines, languageFor, type HighlightedLine } from "./highlight"
-import { isMarkdown } from "./markdown"
+import { isMarkdown, mutedText, tocColors, type MarkdownTheme, type TocColors } from "./markdown"
 import { MarkdownContentView } from "./MarkdownContentView"
 import { extractHeadings, parseMarkdown, type HeadingInfo } from "./markdownParser"
 import { readForView, type ViewFile } from "./readForView"
@@ -256,37 +257,45 @@ export function tocWindowStart(active: number, total: number, rows: number): num
  * purpose and leaves every unmapped token undefined, so most spans in ordinary
  * code arrive here with no colour at all.
  */
-function spanProps(fg: string | undefined): { style?: { fg: string } } {
+function spanProps(fg: RGBA | string | undefined): { style?: { fg: RGBA | string } } {
   return fg === undefined ? {} : { style: { fg } }
 }
 
 /**
  * The style on one row of the table of contents.
  *
- * `reverse` rather than a brighter colour, because the sidebar's whole job is to
- * be scanned rather than read, and the one difference a terminal theme cannot
- * wash out is a row that inverts. A colour would have to be legible against
- * whatever background the reader is running, which is a thing this plugin does
- * not get to know; `reverse` is the terminal's own answer to "make this row
- * obvious" and it works on any background.
+ * Every colour is named by value and comes from the host theme (`tocColors`),
+ * because a name the host cannot resolve is not a neutral fallback -- it is
+ * magenta. This function's first version wrote `fg: "dim"`, which is not a
+ * colour at all: `dim` is a *text attribute* (`TextAttributes.DIM`), and as a
+ * colour name it misses `CSS_COLOR_NAMES`, falls through to the hex parser, and
+ * comes back `RGBA.fromValues(1, 0, 1, 1)`. Every inactive row was pink.
  *
- * Bold on the active row as well, more quietly: reverse is a filled block, and a
- * heading that also reads as *set apart* rather than merely *inverted* is easier
- * to find again on the next scroll.
+ * The active row names both a foreground and a background rather than setting
+ * `reverse`. `reverse` is `TextAttributes.INVERSE`, and the reconciler leaves
+ * `node.fg` untouched when the style carries none:
+ *
+ *     node.fg = value.fg ? parseColor(value.fg) : node.fg
+ *
+ * so the row inverted the *terminal's* default against the terminal's default
+ * background -- light text on a light block on any light background. Naming both
+ * ends cannot land there: the pair is the theme's own contrast pair, read one way
+ * round for the active row and the other for the rest.
  *
  * Under `style` rather than as bare attributes, because the reconciler handles
  * only `href` and `style` for a `TextNodeRenderable` -- which every `<span>` is
- * -- and returns early before reaching anything else. A bare `reverse` or `bold`
- * on a span is silently dropped. `createTextAttributes` reads both off the style
- * object, which is why they are there rather than beside it.
+ * -- and returns early before reaching anything else. A bare `bold` or `reverse`
+ * on a span is silently dropped.
  *
  * A fresh object per call rather than a shared constant, because `setProperty`
  * ORs the attributes in -- `node.attributes |= createTextAttributes(value)` -- so
  * an object handed out once and mutated in place would carry one row's highlight
  * into every row drawn after it.
  */
-export function tocEntryStyle(active: boolean): { style?: Record<string, string | true> } {
-  return active ? { style: { reverse: true, bold: true } } : spanProps("dim")
+export function tocEntryStyle(active: boolean, colors: TocColors): { style: Record<string, RGBA | string | true> } {
+  return active
+    ? { style: { fg: colors.activeFg, bg: colors.activeBg, bold: true } }
+    : { style: { fg: colors.inactive } }
 }
 
 export const FileViewer: Component<FileViewerProps> = (props) => {
@@ -681,6 +690,34 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   const activeHeading = (): number => findActiveHeading(headingPositions(), markdownOffset())
 
   /*
+   * The sidebar's colours, read from the host theme.
+   *
+   * A getter rather than a value captured once, because the theme is resolved
+   * after the plugin mounts: a panel opened before the host had one would
+   * otherwise keep the fallback for the rest of the session. Reading through
+   * also means a theme change repaints with the new one, since the rows below are
+   * rebuilt on every render anyway.
+   *
+   * `context.theme` is typed `ResolvedTheme` by the host's declarations, but that
+   * package is a type-only import we cannot resolve here, so it arrives as the
+   * loose shape `MarkdownTheme` describes -- the same cast `buildSyntaxStyle`
+   * takes, for the same reason. `themeMode` is a plain union and needs no help.
+   */
+  const tocPalette = (): TocColors =>
+    tocColors(context.theme as MarkdownTheme | undefined, context.themeMode ?? "dark")
+
+  /*
+   * The viewer's chrome colour: the line-number gutter on a code file, and every
+   * sidebar row the reader is not currently on.
+   *
+   * The same getter for both because both want the same colour, and because both
+   * were once `spanProps("dim")` -- a colour name the host does not know, which
+   * resolves to magenta.
+   */
+  const mutedColour = (): RGBA | string =>
+    mutedText(context.theme as MarkdownTheme | undefined, context.themeMode ?? "dark")
+
+  /*
    * How many columns the table of contents wants.
    *
    * Driven by the longest heading rather than fixed, because a sidebar of 30
@@ -925,7 +962,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
    */
   const renderRow = (row: Row) => (
     <text wrapMode="none" truncate>
-      <span {...spanProps("dim")}>{`${String(row.number).padStart(gutterWidth, " ")} │ `}</span>
+      <span {...spanProps(mutedColour())}>{`${String(row.number).padStart(gutterWidth, " ")} │ `}</span>
       {row.spans.map((span) => (
         <span {...spanProps(span.color)}>{span.text}</span>
       ))}
@@ -949,7 +986,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
     const indent = TOC_INDENT.repeat(Math.max(0, heading.level - 1))
     return (
       <text wrapMode="none" truncate>
-        <span {...tocEntryStyle(index === activeHeading())}>{`${indent}${heading.text}`}</span>
+        <span {...tocEntryStyle(index === activeHeading(), tocPalette())}>{`${indent}${heading.text}`}</span>
       </text>
     )
   }
@@ -995,7 +1032,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
 
     return (
       <box flexDirection="column" width={width} height={props.height} flexShrink={0}>
-        <text fg="dim" wrapMode="none" truncate flexShrink={0}>
+        <text fg="gray" wrapMode="none" truncate flexShrink={0}>
           {"Contents"}
         </text>
         {headings.slice(start, start + rows).map((heading, offset) => renderTocRow(heading, start + offset))}
@@ -1080,7 +1117,7 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
           height={props.height}
           flexShrink={0}
         >
-          <text fg="dim" wrapMode="none" truncate flexShrink={0}>
+          <text fg="gray" wrapMode="none" truncate flexShrink={0}>
             {markdownHeader(file, props.path)}
           </text>
           <scrollbox flexGrow={1} flexBasis={0} ref={captureMarkdownBox}>
@@ -1121,13 +1158,16 @@ export const FileViewer: Component<FileViewerProps> = (props) => {
   return (
     <box flexDirection="row" justifyContent="center">
       <box flexDirection="column" width={props.maxWidth ?? DEFAULT_MAX_WIDTH}>
-        <text fg="dim" wrapMode="none" truncate>
+        {/* "gray" rather than "dim": `parseColor` accepts CSS colour names and
+            hex only, and a name it does not know does not fall back to the theme
+            -- it falls back to magenta. Every header here was magenta until this. */}
+        <text fg="gray" wrapMode="none" truncate>
           {header()}
         </text>
         {file.kind === "text" ? (
           rows().map(renderRow)
         ) : (
-          <text fg="dim" wrapMode="none" truncate>
+          <text fg="gray" wrapMode="none" truncate>
             {messageFor(file)}
           </text>
         )}

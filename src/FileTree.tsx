@@ -429,7 +429,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
        * say, so focusing changes no heights and no row positions; only the text
        * appears.
        */}
-      <Show when={focused()} fallback={<text fg="dim">{" "}</text>}>
+      <Show when={focused()} fallback={<text fg="gray">{" "}</text>}>
         <text fg="cyan" wrapMode="none" truncate>
           {"↑↓ move · enter open · s send · esc"}
         </text>
@@ -437,7 +437,7 @@ export const FileTree: Component<FileTreeProps> = (props) => {
       <Show
         when={rows().total > 0}
         fallback={
-          <text fg="dim">
+          <text fg="gray">
             {describeEmpty(
               rows().reason,
               rows().total,
@@ -493,13 +493,13 @@ const TreeRows: Component<{
       />
     ))}
     <Show when={props.failures.size > 0}>
-      <text fg="dim"> {props.failures.size} folder(s) unreadable</text>
+      <text fg="gray"> {props.failures.size} folder(s) unreadable</text>
     </Show>
     <Show when={props.view.start > 0}>
-      <text fg="dim"> {props.view.start} more above</text>
+      <text fg="gray"> {props.view.start} more above</text>
     </Show>
     <Show when={props.view.end < props.total}>
-      <text fg="dim"> {props.total - props.view.end} more below</text>
+      <text fg="gray"> {props.total - props.view.end} more below</text>
     </Show>
   </>
 )
