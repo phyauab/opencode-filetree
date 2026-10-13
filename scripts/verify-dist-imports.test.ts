@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test"
 import { readdir, readFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join, relative } from "node:path"
 
 /**
  * OpenCode rewrites bare OpenTUI/solid specifiers in plugin files so they point
@@ -14,6 +14,28 @@ import { join } from "node:path"
 const dist = join(import.meta.dir, "..", "dist")
 const RELATIVE_IMPORT = /from\s+["'](\.[^"']*)["']/g
 
+/**
+ * Every .js file under dist/, at any depth, with its source. dist/ is nested
+ * (dist/viewer/), so a top-level-only scan misses exactly the modules that
+ * carry bare @opentui/solid imports behind an extensionless edge.
+ */
+async function distModules(): Promise<{ file: string; label: string; source: string }[]> {
+  const modules: { file: string; label: string; source: string }[] = []
+
+  async function walk(dir: string) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile() && entry.name.endsWith(".js")) {
+        modules.push({ file: path, label: relative(dist, path), source: await readFile(path, "utf8") })
+      }
+    }
+  }
+
+  await walk(dist)
+  return modules
+}
+
 describe("dist import specifiers", () => {
   it("has been built", async () => {
     expect(existsSync(join(dist, "tui.js"))).toBe(true)
@@ -22,14 +44,11 @@ describe("dist import specifiers", () => {
   it("gives every relative import an explicit .js extension", async () => {
     const offenders = []
 
-    for (const entry of await readdir(dist, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".js")) continue
-      const source = await readFile(join(dist, entry.name), "utf8")
-
+    for (const { label, source } of await distModules()) {
       for (const match of source.matchAll(RELATIVE_IMPORT)) {
         const specifier = match[1]
         if (!/\.(js|json|mjs|cjs)$/.test(specifier)) {
-          offenders.push(`${entry.name}: "${specifier}"`)
+          offenders.push(`${label}: "${specifier}"`)
         }
       }
     }
@@ -40,13 +59,12 @@ describe("dist import specifiers", () => {
   it("resolves each rewritten specifier to a real file", async () => {
     const missing = []
 
-    for (const entry of await readdir(dist, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".js")) continue
-      const source = await readFile(join(dist, entry.name), "utf8")
-
+    for (const { file, label, source } of await distModules()) {
       for (const match of source.matchAll(RELATIVE_IMPORT)) {
         const specifier = match[1]
-        if (!existsSync(join(dist, specifier))) missing.push(`${entry.name}: "${specifier}"`)
+        // Relative to the importing file's own directory, not to dist/: a
+        // nested module's "../x" climbs out of its subdirectory.
+        if (!existsSync(join(dirname(file), specifier))) missing.push(`${label}: "${specifier}"`)
       }
     }
 
