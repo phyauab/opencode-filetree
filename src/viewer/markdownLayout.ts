@@ -306,7 +306,10 @@ function piecesOf(text: string, style: RowSpan): Piece[] {
  * loose list item's paragraphs arrive with one) ends the row outright rather than
  * being treated as a gap, and a word longer than the row is cut at the row's edge
  * -- a URL or a path in a narrow terminal would otherwise be one row's worth of
- * text spread over however many rows the terminal decided on.
+ * text spread over however many rows the terminal decided on. A word that merely
+ * does not fit in what is left of the row is moved down whole instead, which is the
+ * difference between wrapping and splitting, and the reason "Content" no longer
+ * arrives as "Con" and "tent".
  *
  * No row this returns is wider than `width`, because the budget the caller hands in
  * is what is left of the row after its prefix. That is the invariant every piece
@@ -367,9 +370,18 @@ function wrapSpans(spans: RowSpan[], width: number): Row[] {
           continue
         }
         /*
-         * Words are measured and cut in columns, not in characters: twenty CJK
-         * characters are forty columns wide, and slicing at a character count
-         * would put twice that on the row.
+         * A word is moved whole to the next row when it does not fit, not cut
+         * where the row ends. Cutting mid-word -- "Content" as "Con" on one row
+         * and "tent" on the next -- is the thing word wrapping exists to prevent,
+         * and it is the more annoying for being invisible: nothing is lost, so
+         * the text looks complete until the reader tries to read a word and
+         * cannot.
+         *
+         * A word is cut only when it is wider than a whole row, because there is
+         * then nowhere to move it: a long URL or path in a narrow terminal has
+         * to be broken to be shown at all. CJK has no spaces to wrap at, so its
+         * runs are always wider than a row and always cut -- which is correct,
+         * since any break is between words there.
          */
         let word = piece.text
         while (word.length > 0) {
@@ -378,25 +390,17 @@ function wrapSpans(spans: RowSpan[], width: number): Row[] {
             push(word, piece.style)
             break
           }
-          const taken = room > 0 ? takeColumns(word, room) : ""
-          if (taken.length > 0) {
-            push(taken, piece.style)
-            word = word.slice(taken.length)
+          if (used > 0) {
+            // The row already has content, so the word has somewhere to go. End
+            // the row and retry it against the whole budget; on the next pass it
+            // either fits or is wider than a row and is cut below.
+            endRow()
+            continue
           }
-          /*
-           * Whatever is left goes on a row of its own. The one case that cannot
-           * be fixed by ending the row is a character wider than a whole row --
-           * an ideograph in a one-column layout. Taking it then overshoots by one
-           * character and `truncate` cuts it, which beats a loop that never ends,
-           * and no real width gets there: the panel floor is thirty columns.
-           */
-          const head = word.length > 0 ? String.fromCodePoint(word.codePointAt(0)!) : ""
-          const unsatisfiable = taken.length === 0 && displayWidth(head) > budget
+          const taken = takeColumns(word, budget)
+          push(taken, piece.style)
+          word = word.slice(taken.length)
           endRow()
-          if (unsatisfiable) {
-            push(word, piece.style)
-            break
-          }
         }
       }
     }

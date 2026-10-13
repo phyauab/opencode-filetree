@@ -500,7 +500,10 @@ describe("rows fit the column they are drawn in", () => {
     const doc = "A fairly long paragraph of ordinary English prose that runs past any narrow column and must wrap.\n"
     for (const width of [30, 40, 50, 80]) {
       const { rows } = layoutBlocks(parseMarkdown(doc), width)
-      expect({ width, widest: widestRow(rows) }).toEqual({ width, widest: width })
+      // Never *wider* than the budget. It will not always be exactly the width:
+      // a word that does not fit in what is left moves down whole, which is the
+      // whole point, so rows are ragged-right and the widest is often short of it.
+      expect(widestRow(rows)).toBeLessThanOrEqual(width)
     }
   })
 
@@ -564,5 +567,63 @@ describe("rows fit the column they are drawn in", () => {
     expect(displayWidth("a中b")).toBe(4)
     expect(displayWidth("🚀")).toBe(2)
     expect(displayWidth("")).toBe(0)
+  })
+})
+
+
+describe("words are not split across rows", () => {
+  /*
+   * The wrapper used to cut any word that did not fit in the space left on the
+   * row, so "Content" became "Con" on one row and "tent" on the next. Nothing
+   * was lost, which is why it read as a layout bug rather than a wrap bug: the
+   * text looked complete until the reader tried to read a word and could not.
+   */
+
+  it("moves a word that does not fit onto the next row whole", () => {
+    // "Content" is 7 columns. At width 10 with "See " already on the row there
+    // are 6 left, so it does not fit -- and must not be cut. The trailing space
+    // is the gap before it, kept whole so the words stay separated.
+    const rows = rowsOf("See Content here\n", 10)
+    expect(rows).toEqual(["See ", "Content ", "here"])
+  })
+
+  it("does not split a word at the row edge", () => {
+    const rows = rowsOf("aaaaaa bbbbbb cccccc\n", 10)
+    // Each word is 6 columns, so two fit per row and the third wraps whole.
+    expect(rows).toEqual(["aaaaaa ", "bbbbbb ", "cccccc"])
+  })
+
+  it("keeps a word that fits a whole row on its own row", () => {
+    // "abcdefghij" is 10 columns: it fits a whole row but not the 8 left after
+    // "x ", so it moves down whole rather than being cut.
+    const rows = rowsOf("x abcdefghij y\n", 10)
+    expect(rows).toEqual(["x ", "abcdefghij", "y"])
+  })
+
+  it("still cuts a word wider than a whole row", () => {
+    // A word longer than the row has nowhere to go, so it is cut -- a URL or a
+    // path in a narrow terminal has to be broken to be shown at all.
+    const rows = rowsOf("abcdefghijklmnopqrstuvwxyz\n", 10)
+    expect(rows).toEqual(["abcdefghij", "klmnopqrst", "uvwxyz"])
+  })
+
+  it("still cuts cjk runs, which have no spaces to wrap at", () => {
+    // CJK has no word boundaries, so a run is always wider than a row and is cut
+    // between characters -- which is correct, since any break is between words.
+    // 11 characters is 22 columns, so three rows at a width of 10.
+    const rows = rowsOf("这是一段很长的中文段落\n", 10)
+    expect(rows).toHaveLength(3)
+    expect(rows.map(columnsOf)).toEqual([10, 10, 2])
+  })
+
+  it("never emits a row wider than the width", () => {
+    // The invariant the whole change exists to keep.
+    for (const width of [10, 20, 30, 40]) {
+      for (const doc of ["See Content here\n", "aaaaaa bbbbbb cccccc\n", "这是一段很长的中文段落\n"]) {
+        for (const row of rowsOf(doc, width)) {
+          expect(columnsOf(row)).toBeLessThanOrEqual(width)
+        }
+      }
+    }
   })
 })
